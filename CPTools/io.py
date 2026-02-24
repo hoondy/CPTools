@@ -137,7 +137,7 @@ def _read_single_harmony(
     var = pd.DataFrame(index=var_names)
     var["feature"] = feature_cols
 
-    adata = ad.AnnData(feature_matrix, obs=obs, var=var, dtype=np.float32)
+    adata = ad.AnnData(feature_matrix, obs=obs, var=var)
     adata.layers["raw"] = adata.X.copy()
 
     if "Treatment" in adata.obs.columns:

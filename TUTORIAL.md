@@ -27,10 +27,15 @@ import numpy as np
 Use CPTools I/O to load feature matrix + metadata directly into an `AnnData` object:
 
 ```python
-results_path = "./data/PlateResults.txt"
-meta_path = "./data/meta.csv"
+res_list = ["./data/01A/PlateResults.txt", "./data/01B/PlateResults.txt"]
+batch_list = ["01A", "01B"]
+schema_path = "./data/Schema_MCE_master_v2.csv"
 
-adata = cpt.read_harmony(results_path, meta_path)
+adata = cpt.read_harmony(
+    plate_results_path=res_list,
+    schema=schema_path,
+    batch=batch_list,
+)
 adata
 ```
 
@@ -141,7 +146,11 @@ import CPTools as cpt
 import scanpy as sc
 
 # 1) Load
-adata = cpt.read_harmony("./data/PlateResults.txt", "./data/meta.csv")
+adata = cpt.read_harmony(
+    plate_results_path=["./data/01A/PlateResults.txt", "./data/01B/PlateResults.txt"],
+    schema="./data/Schema_MCE_master_v2.csv",
+    batch=["01A", "01B"],
+)
 
 # 2) Normalize
 adata = cpt.pp.robust_zscore_norm(adata)

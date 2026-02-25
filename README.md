@@ -17,10 +17,16 @@ pip install -e .
 import CPTools as cpt
 
 # data I/O
+res_list = ["Plate01A/PlateResults.txt", "Plate01B/PlateResults.txt"]
+batch_list = ["01A", "01B"]
 adata = cpt.read_harmony(
-    "PlateResults.txt",
-    "01A_Plate_results_Schema_MCE_partA_100Dx3x1conc_SP_001_randomized_Fri_Sep_19_16_05_32_2025__rand4834.tsv",
+    plate_results_path=res_list,
+    schema="Schema_MCE_master_v2.csv",
+    batch=batch_list,
+    cell_type="iGLUT",
 )
+# equivalent:
+# adata = cpt.io.read_harmony(...)
 
 # normalization
 cpt.pp.robust_zscore_norm(adata)

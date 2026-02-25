@@ -8,7 +8,7 @@ Cell Painting utilities for:
 ## Install
 
 ```bash
-pip install -e .
+pip install git+https://github.com/hoondy/CPTools
 ```
 
 ## Quick Start
@@ -21,7 +21,7 @@ res_list = ["Plate01A/PlateResults.txt", "Plate01B/PlateResults.txt"]
 batch_list = ["01A", "01B"]
 adata = cpt.read_harmony(
     plate_results_path=res_list,
-    schema="Schema_MCE_master_v2.csv",
+    schema="/path/to/schema.csv",
     batch=batch_list,
     cell_type="iGLUT",
 )

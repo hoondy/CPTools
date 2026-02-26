@@ -1,9 +1,10 @@
 # CPTools
 
 Cell Painting utilities for:
-- Harmony + schema ingestion into `AnnData`
+- Harmony + master schema ingestion into `AnnData`
 - Control-based robust normalization
 - Feature filtering and reproducibility-aware selection
+- Plotly-based visualization helpers
 
 ## Install
 
@@ -16,23 +17,27 @@ pip install git+https://github.com/hoondy/CPTools
 ```python
 import CPTools as cpt
 
-# data I/O
+# data I/O (single pre-processed schema for all plates)
 res_list = ["Plate01A/PlateResults.txt", "Plate01B/PlateResults.txt"]
 batch_list = ["01A", "01B"]
-adata = cpt.read_harmony(
+adata = cpt.io.read_harmony(
     plate_results_path=res_list,
     schema="/path/to/schema.csv",
     batch=batch_list,
     cell_type="iGLUT",
 )
-# equivalent:
-# adata = cpt.io.read_harmony(...)
+
+# required schema columns: Batch, Row, Column
 
 # normalization
-cpt.pp.robust_zscore_norm(adata)
+adata = cpt.pp.robust_zscore_norm(adata)
+adata.layers["normalized"] = adata.X.copy()
 
 # feature selection by replicate SNR (flags adata.var['highly_variable'])
 cpt.pp.snr_feature_selection(adata)
+
+# optional whitening
+adata = cpt.pp.zca_whiten(adata)
 ```
 
 ## Typical Funnel
@@ -64,4 +69,21 @@ sc.pp.pca(adata, use_highly_variable=True)
 sc.pp.neighbors(adata)
 sc.tl.umap(adata)
 sc.tl.leiden(adata)
+```
+
+## Visualization
+
+```python
+# embedding scatter (Plotly)
+cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")
+
+# treatment vs control effect plots (volcano + boxplots)
+cpt.tl.visualize_drug_effect(
+    adata,
+    treatment=["Triptonide", "Triptolide"],
+    treatment_key="Treatment",
+    control_value="DMSO",
+    layer="normalized",
+    top_n=5,
+)
 ```

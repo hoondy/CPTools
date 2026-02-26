@@ -8,7 +8,7 @@ It covers:
 3. Feature selection (full funnel)
 4. ZCA whitening
 5. PCA / neighbors / UMAP
-6. Mechanism-of-action visualization
+6. Plotly visualization (`scatter` + `visualize_drug_effect`)
 
 ---
 
@@ -17,7 +17,6 @@ It covers:
 ```python
 import CPTools as cpt
 import scanpy as sc
-import numpy as np
 ```
 
 ---
@@ -31,7 +30,7 @@ res_list = ["./data/01A/PlateResults.txt", "./data/01B/PlateResults.txt"]
 batch_list = ["01A", "01B"]
 schema_path = "./data/Schema_MCE_master_v2.csv"
 
-adata = cpt.read_harmony(
+adata = cpt.io.read_harmony(
     plate_results_path=res_list,
     schema=schema_path,
     batch=batch_list,
@@ -39,10 +38,12 @@ adata = cpt.read_harmony(
 adata
 ```
 
-Expected key metadata columns for downstream steps include (names can vary by dataset):
+Required metadata columns:
 - `Batch`
-- `Treatment`
-- optional: `MOA`, `PlateSet_DrugCode`, etc.
+- `Row`
+- `Column`
+- `Treatment` (required for normalization/selection/Drug effect visualization)
+- optional: `MOA`, `PathWay`, `Research_Area`, etc.
 
 ---
 
@@ -98,7 +99,7 @@ adata = cpt.pp.snr_feature_selection(
 Apply whitening for improved geometric comparability across features:
 
 ```python
-adata = cpt.pp.zca_whitening(adata)
+adata = cpt.pp.zca_whiten(adata)
 ```
 
 > Tip: perform interpretation from `adata.layers["normalized"]` (or another non-whitened layer), not the whitened matrix.
@@ -113,29 +114,34 @@ Use standard Scanpy APIs for dimensionality reduction and visualization:
 sc.tl.pca(adata)
 sc.pp.neighbors(adata, n_pcs=30)
 sc.tl.umap(adata)
-
-sc.pl.umap(adata, color=["Batch", "Treatment"], wspace=0.4)
 ```
 
-Add any additional labels available in your metadata (e.g., `MOA`).
+Plot the embedding with Plotly:
+
+```python
+cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")
+```
 
 ---
 
-## 7) Mechanism of Action Visualization
+## 7) Drug Effect Visualization
 
-Use CPTools tooling for drug-vs-control feature interpretation:
+Use CPTools tooling for treatment-vs-control feature interpretation:
 
 ```python
-cpt.tl.visualize_drug_mechanism(
+cpt.tl.visualize_drug_effect(
     adata,
-    drug_code="13A_Drug88",
-    control_code="13A_DMSO",
-    layer="normalized",  # recommended for interpretation
+    treatment=["Triptonide", "Triptolide"],
+    treatment_key="Treatment",
+    control_value="DMSO",
+    layer="normalized",
     top_n=5,
 )
 ```
 
-This typically highlights the strongest differentiating features and significance patterns between treatment and matched control.
+This generates:
+- Volcano plots per treatment vs control
+- Boxplots for top differentiating features
 
 ---
 
@@ -146,7 +152,7 @@ import CPTools as cpt
 import scanpy as sc
 
 # 1) Load
-adata = cpt.read_harmony(
+adata = cpt.io.read_harmony(
     plate_results_path=["./data/01A/PlateResults.txt", "./data/01B/PlateResults.txt"],
     schema="./data/Schema_MCE_master_v2.csv",
     batch=["01A", "01B"],
@@ -165,18 +171,20 @@ adata = cpt.pp.funnel(
 )
 
 # 4) Whitening
-adata = cpt.pp.zca_whitening(adata)
+adata = cpt.pp.zca_whiten(adata)
 
 # 5) Embedding
 sc.tl.pca(adata)
 sc.pp.neighbors(adata, n_pcs=30)
 sc.tl.umap(adata)
+cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")
 
-# 6) MoA visualization
-cpt.tl.visualize_drug_mechanism(
+# 6) Drug-effect visualization
+cpt.tl.visualize_drug_effect(
     adata,
-    drug_code="13A_Drug88",
-    control_code="13A_DMSO",
+    treatment=["Triptonide", "Triptolide"],
+    treatment_key="Treatment",
+    control_value="DMSO",
     layer="normalized",
     top_n=5,
 )
@@ -188,4 +196,4 @@ cpt.tl.visualize_drug_mechanism(
 
 - Ensure controls (`DMSO`) are present in each batch for robust normalization.
 - Keep layered data (`raw`, `normalized`, whitened `X`) for reproducibility and interpretation.
-- Use CPTools preprocessing (`cpt.pp.*`) for morphology-specific steps and Scanpy for general manifold learning.
+- Use CPTools preprocessing (`cpt.pp.*`) for morphology-specific steps and Plotly/Scanpy for visualization and manifold learning.

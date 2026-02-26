@@ -216,9 +216,12 @@ def snr_feature_selection(
 ) -> ad.AnnData:
     """
     Select features by replicate signal-to-noise ratio (SNR).
+    Using a SNR approach, which is computationally efficient and effectively a univariate F-statistic,
+    select features that are consistent within a treatment group (low noise),
+    while vary between different treatments (high signal).
 
     Signal = variance of treatment means (excluding controls).
-    Noise = mean within-treatment variance (including controls).
+    Noise = mean within-treatment (replicates) variance (including controls).
     """
     if treatment_key not in adata.obs.columns:
         raise KeyError(f"Missing '{treatment_key}' in adata.obs")
@@ -241,7 +244,11 @@ def snr_feature_selection(
     if non_controls.empty:
         raise ValueError("No non-control groups available for SNR calculation.")
 
+    # Calculate Signal (Variance Between Treatment Means)
+    # Group by Treatment -> Calculate Mean Vector for each Drug -> Calculate Variance of those Means
     signal = non_controls.groupby(treatment_key)[feature_names].mean().var(axis=0, ddof=1).fillna(0.0)
+    # Calculate Noise (Average Variance Within Replicates)
+    # Group by Treatment -> Calculate Variance Vector for each Drug -> Average these Variances
     noise = df.groupby(treatment_key)[feature_names].var(ddof=1).mean(axis=0).fillna(0.0)
     snr = signal / (noise + 1e-9)
 

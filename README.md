@@ -48,9 +48,9 @@ cpt.pp.funnel(
     batch_key="Batch",
     treatment_key="Treatment",
     control_value="DMSO",
-    variance_threshold=1e-2,
+    variance_threshold=0.01,  # drop bottom 1% by variance
     corr_threshold=0.9,
-    snr_keep_top_fraction=0.2,
+    snr_threshold=0.8,  # exclude bottom 80% by SNR
     verbose=True,  # prints per-step filtered/selected feature counts
 )
 ```
@@ -94,6 +94,9 @@ sc.tl.leiden(adata)
 ```python
 # embedding scatter (Plotly)
 cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")
+
+# multi-panel scatter
+cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)
 
 # treatment vs control effect plots (volcano + boxplots)
 cpt.tl.visualize_drug_effect(

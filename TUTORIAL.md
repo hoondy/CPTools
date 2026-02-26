@@ -75,6 +75,8 @@ adata = cpt.pp.funnel(
     batch_key="Batch",
     treatment_key="Treatment",
     control_value="DMSO",
+    variance_threshold=0.01,  # drop bottom 1% by variance
+    snr_threshold=0.8,        # exclude bottom 80% by SNR
     verbose=True,  # prints per-step filtered/selected feature counts
 )
 ```
@@ -132,6 +134,7 @@ Plot the embedding with Plotly:
 
 ```python
 cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")
+cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)
 ```
 
 ---
@@ -180,6 +183,8 @@ adata = cpt.pp.funnel(
     batch_key="Batch",
     treatment_key="Treatment",
     control_value="DMSO",
+    variance_threshold=0.01,
+    snr_threshold=0.8,
     subset=False,  # default: keep all features, mark highly_variable
     verbose=True,
 )
@@ -192,6 +197,7 @@ sc.tl.pca(adata)
 sc.pp.neighbors(adata, n_pcs=30)
 sc.tl.umap(adata)
 cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")
+cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)
 
 # 6) Drug-effect visualization
 cpt.tl.visualize_drug_effect(

@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from scipy import stats
 
 from ._utils import to_dense_matrix
@@ -15,20 +16,22 @@ from ._utils import to_dense_matrix
 
 def scatter(
     adata: ad.AnnData,
-    color: str | None = None,
+    color: str | Sequence[str] | None = None,
     use_rep: str = "X_umap",
     width: int = 800,
     height: int = 800,
+    wspace: float = 0.1,
     title: str | None = None,
     show: bool = True,
     **kwargs: Any,
-) -> go.Figure:
+) -> go.Figure | None:
     """
     Plot a 2D embedding from ``adata.obsm`` using Plotly.
 
-    Example
+    Examples
     -------
     ``cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")``
+    ``cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)``
     """
     if use_rep not in adata.obsm:
         raise KeyError(f"Embedding '{use_rep}' not found in adata.obsm.")
@@ -45,27 +48,80 @@ def scatter(
         index=adata.obs_names,
     )
 
-    color_col: str | None = None
-    if color is not None:
-        if color not in adata.obs.columns:
-            raise KeyError(f"Column '{color}' not found in adata.obs.")
-        frame[color] = adata.obs[color].astype(str).values
-        color_col = color
+    if color is None:
+        color_list: list[str | None] = [None]
+    elif isinstance(color, str):
+        color_list = [color]
+    else:
+        color_list = list(color)
+        if len(color_list) == 0:
+            raise ValueError("If 'color' is a sequence, it cannot be empty.")
 
-    fig = px.scatter(
-        frame,
-        x=f"{use_rep}_1",
-        y=f"{use_rep}_2",
-        color=color_col,
-        width=width,
-        height=height,
-        title=title or f"{use_rep} scatter",
-        **kwargs,
-    )
-    fig.update_layout(legend_title_text=color_col or "")
+    for color_col in color_list:
+        if color_col is not None and color_col not in adata.obs.columns:
+            raise KeyError(f"Column '{color_col}' not found in adata.obs.")
+
+    x_col = f"{use_rep}_1"
+    y_col = f"{use_rep}_2"
+
+    if len(color_list) == 1:
+        color_col = color_list[0]
+        single = frame.copy()
+        if color_col is not None:
+            single[color_col] = adata.obs[color_col].astype(str).values
+        fig = px.scatter(
+            single,
+            x=x_col,
+            y=y_col,
+            color=color_col,
+            width=width,
+            height=height,
+            title=title or f"{use_rep} scatter",
+            **kwargs,
+        )
+        fig.update_layout(legend_title_text=color_col or "")
+    else:
+        ncols = len(color_list)
+        max_spacing = 0.98 / max(1, ncols - 1)
+        spacing = min(max(wspace, 0.0), max_spacing)
+        subplot_titles = [c if c is not None else "All cells" for c in color_list]
+        fig = make_subplots(
+            rows=1,
+            cols=ncols,
+            subplot_titles=subplot_titles,
+            horizontal_spacing=spacing,
+        )
+
+        for idx, color_col in enumerate(color_list, start=1):
+            panel = frame.copy()
+            if color_col is not None:
+                panel[color_col] = adata.obs[color_col].astype(str).values
+
+            panel_fig = px.scatter(
+                panel,
+                x=x_col,
+                y=y_col,
+                color=color_col,
+                **kwargs,
+            )
+            for trace in panel_fig.data:
+                if color_col is not None:
+                    base_name = trace.name if trace.name else "value"
+                    trace.name = f"{color_col}: {base_name}"
+                    trace.legendgroup = trace.name
+                fig.add_trace(trace, row=1, col=idx)
+            fig.update_xaxes(title_text=x_col, row=1, col=idx)
+            fig.update_yaxes(title_text=y_col, row=1, col=idx)
+
+        fig.update_layout(
+            width=width,
+            height=height,
+            title=title or f"{use_rep} scatter",
+        )
 
     if show:
         fig.show()
+        return None
     return fig
 
 
@@ -255,4 +311,3 @@ def visualize_drug_effect(
             show=show,
         )
     return output
-

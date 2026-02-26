@@ -330,7 +330,8 @@ def funnel(
     control_value: str = "DMSO",
     variance_threshold: float = 1e-2,
     corr_threshold: float = 0.9,
-    snr_keep_top_fraction: float = 0.2,
+    snr_threshold: float = 0.8,
+    snr_keep_top_fraction: float | None = None,
     subset: bool = False,
     verbose: bool = True,
     inplace: bool = True,
@@ -343,6 +344,27 @@ def funnel(
 
     Set ``subset=True`` to physically subset features to the final selected set.
     """
+    if not (0 <= variance_threshold <= 1):
+        raise ValueError("variance_threshold must be in [0, 1] and is interpreted as a quantile.")
+
+    if snr_keep_top_fraction is not None:
+        if not (0 < snr_keep_top_fraction <= 1):
+            raise ValueError("snr_keep_top_fraction must be in (0, 1].")
+        if snr_threshold != 0.8:
+            raise ValueError(
+                "Pass only one of 'snr_threshold' or deprecated 'snr_keep_top_fraction'."
+            )
+        warnings.warn(
+            "'snr_keep_top_fraction' is deprecated; use 'snr_threshold' "
+            "(fraction to exclude from bottom).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        snr_threshold = 1.0 - snr_keep_top_fraction
+
+    if not (0 <= snr_threshold <= 1):
+        raise ValueError("snr_threshold must be in [0, 1].")
+
     target = adata if inplace else adata.copy()
     robust_zscore_norm(
         target,
@@ -374,7 +396,9 @@ def funnel(
         print(f"[funnel] nan_filter: filtered {filtered}, remaining {working.n_vars}")
 
     before = working.n_vars
-    variance_filter(working, threshold=variance_threshold, subset=True, inplace=True)
+    var_values = np.nanvar(_matrix_from_layer(working, source_layer=None), axis=0)
+    variance_cutoff = float(np.nanquantile(var_values, variance_threshold))
+    variance_filter(working, threshold=variance_cutoff, subset=True, inplace=True)
     if verbose:
         filtered = before - working.n_vars
         print(f"[funnel] variance_filter: filtered {filtered}, remaining {working.n_vars}")
@@ -389,7 +413,7 @@ def funnel(
         working,
         treatment_key=treatment_key,
         control_value=control_value,
-        keep_top_fraction=snr_keep_top_fraction,
+        quantile_threshold=snr_threshold,
         subset=False,
         inplace=True,
     )
@@ -430,8 +454,9 @@ def funnel(
         "treatment_key": treatment_key,
         "control_value": control_value,
         "variance_threshold": variance_threshold,
+        "variance_cutoff": variance_cutoff,
         "corr_threshold": corr_threshold,
-        "snr_keep_top_fraction": snr_keep_top_fraction,
+        "snr_threshold": snr_threshold,
         "subset": subset,
         "verbose": verbose,
     }

@@ -51,12 +51,30 @@ cpt.pp.funnel(
     variance_threshold=1e-2,
     corr_threshold=0.9,
     snr_keep_top_fraction=0.2,
+    verbose=True,  # prints per-step filtered/selected feature counts
 )
 ```
 
+`funnel` does **not** remove features by default. It writes:
+- `adata.var["pass_funnel_prefilter"]`
+- `adata.var["highly_variable"]`
+- `adata.var["replicate_snr"]`
+
+To subset features physically, opt in with:
+
+```python
+cpt.pp.funnel(adata, batch_key="Batch", treatment_key="Treatment", control_value="DMSO", subset=True)
+```
+
+Individual filters follow the same rule:
+- `cpt.pp.blocklist_filter(...)`, `cpt.pp.drop_nan_features(...)`,
+  `cpt.pp.variance_filter(...)`, `cpt.pp.correlation_filter(...)`
+- default is annotation-only (`subset=False`)
+- pass `subset=True` to actually remove features
+
 ## Downstream DR / Clustering
 
-`snr_feature_selection` keeps all features by default and writes:
+`funnel`/`snr_feature_selection` keep all features by default and write:
 - `adata.var["highly_variable"]`
 - `adata.var["replicate_snr"]`
 

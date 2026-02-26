@@ -75,10 +75,22 @@ adata = cpt.pp.funnel(
     batch_key="Batch",
     treatment_key="Treatment",
     control_value="DMSO",
+    verbose=True,  # prints per-step filtered/selected feature counts
 )
 ```
 
-This is the preferred production path.
+This is the preferred production path. By default it does not remove features;
+it marks them via:
+- `adata.var["pass_funnel_prefilter"]`
+- `adata.var["highly_variable"]`
+- `adata.var["replicate_snr"]`
+
+Use `subset=True` only if you explicitly want to remove non-selected features.
+
+The same behavior applies to individual filters:
+- `blocklist_filter`, `drop_nan_features`, `variance_filter`, `correlation_filter`
+- default: annotate pass/fail masks in `adata.var`
+- `subset=True`: physically subset features
 
 ### Optional: run replicate SNR selection directly
 
@@ -168,6 +180,8 @@ adata = cpt.pp.funnel(
     batch_key="Batch",
     treatment_key="Treatment",
     control_value="DMSO",
+    subset=False,  # default: keep all features, mark highly_variable
+    verbose=True,
 )
 
 # 4) Whitening

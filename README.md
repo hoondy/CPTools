@@ -94,17 +94,22 @@ sc.tl.leiden(adata)
 ```python
 # embedding scatter (Plotly)
 cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")
+cpt.tl.scatter(adata, color="MOA", use_rep="X_umap", legend=False)
 
 # multi-panel scatter
 cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)
 
 # treatment vs control effect plots (volcano + boxplots)
-cpt.tl.visualize_drug_effect(
+top_hits = cpt.tl.visualize_drug_effect(
     adata,
     treatment=["Triptonide", "Triptolide"],
     treatment_key="Treatment",
     control_value="DMSO",
     layer="normalized",
     top_n=5,
+    qvalue_threshold=0.05,
+    legend=False,
 )
+# returns a DataFrame with:
+# Feature, Effect Size, P-value, Adjusted P-value
 ```

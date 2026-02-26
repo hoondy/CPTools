@@ -21,6 +21,7 @@ def scatter(
     width: int = 800,
     height: int = 800,
     wspace: float = 0.1,
+    legend: bool = True,
     title: str | None = None,
     show: bool = True,
     **kwargs: Any,
@@ -119,6 +120,8 @@ def scatter(
             title=title or f"{use_rep} scatter",
         )
 
+    fig.update_layout(showlegend=legend)
+
     if show:
         fig.show()
         return None
@@ -137,142 +140,17 @@ def _get_data_matrix(adata: ad.AnnData, layer: str | None) -> np.ndarray:
     return to_dense_matrix(adata.layers[layer])
 
 
-def _drug_effect_single(
-    adata: ad.AnnData,
-    treatment: str,
-    treatment_key: str,
-    control_value: str,
-    layer: str | None,
-    top_n: int,
-    pvalue_threshold: float,
-    effect_threshold: float,
-    show: bool,
-) -> dict[str, Any]:
-    if treatment_key not in adata.obs.columns:
-        raise KeyError(f"Column '{treatment_key}' not found in adata.obs.")
-
-    if top_n < 1:
-        raise ValueError("top_n must be >= 1.")
-
-    X = _get_data_matrix(adata, layer=layer)
-    frame = pd.DataFrame(X, columns=adata.var_names, index=adata.obs_names)
-    frame[treatment_key] = adata.obs[treatment_key].astype(str).values
-
-    drug_df = frame[frame[treatment_key] == treatment].drop(columns=treatment_key)
-    ctrl_df = frame[frame[treatment_key] == control_value].drop(columns=treatment_key)
-
-    if len(drug_df) < 2 or len(ctrl_df) < 2:
-        raise ValueError(
-            f"Not enough replicates for treatment '{treatment}' vs control '{control_value}'. "
-            f"Need at least 2 wells each."
-        )
-
-    effect_size = drug_df.mean(axis=0) - ctrl_df.mean(axis=0)
-    _, p_vals = stats.ttest_ind(drug_df, ctrl_df, axis=0, equal_var=False, nan_policy="omit")
-    p_vals = np.nan_to_num(p_vals, nan=1.0)
-    log_p = -np.log10(p_vals + 1e-300)
-
-    results = pd.DataFrame(
-        {
-            "feature": adata.var_names,
-            "effect_size": effect_size.values,
-            "p_value": p_vals,
-            "log_p": log_p,
-        }
-    ).set_index("feature")
-
-    top_hits = results.sort_values("log_p", ascending=False).head(top_n).copy()
-    sig_mask = (results["p_value"] < pvalue_threshold) & (results["effect_size"].abs() >= effect_threshold)
-    sig_results = results[sig_mask]
-
-    # Volcano plot
-    volcano = go.Figure()
-    volcano.add_trace(
-        go.Scattergl(
-            x=results["effect_size"],
-            y=results["log_p"],
-            mode="markers",
-            name="All features",
-            marker={"color": "lightgray", "size": 6, "opacity": 0.6},
-            hovertemplate="feature=%{text}<br>effect=%{x:.3f}<br>-log10(p)=%{y:.3f}<extra></extra>",
-            text=results.index,
-        )
-    )
-    volcano.add_trace(
-        go.Scattergl(
-            x=sig_results["effect_size"],
-            y=sig_results["log_p"],
-            mode="markers",
-            name="Significant",
-            marker={"color": "firebrick", "size": 7, "opacity": 0.85},
-            hovertemplate="feature=%{text}<br>effect=%{x:.3f}<br>-log10(p)=%{y:.3f}<extra></extra>",
-            text=sig_results.index,
-        )
-    )
-    volcano.add_trace(
-        go.Scatter(
-            x=top_hits["effect_size"],
-            y=top_hits["log_p"],
-            mode="markers+text",
-            name=f"Top {top_n}",
-            text=top_hits.index.tolist(),
-            textposition="top center",
-            marker={"color": "red", "size": 9, "line": {"color": "black", "width": 1}},
-            hovertemplate="feature=%{text}<br>effect=%{x:.3f}<br>-log10(p)=%{y:.3f}<extra></extra>",
-        )
-    )
-    volcano.add_hline(
-        y=-np.log10(max(pvalue_threshold, 1e-300)),
-        line_dash="dot",
-        line_color="royalblue",
-        annotation_text=f"p={pvalue_threshold}",
-    )
-    volcano.add_vline(x=0, line_dash="dash", line_color="gray")
-    volcano.update_layout(
-        title=f"Drug Effect Volcano: {treatment} vs {control_value}",
-        xaxis_title=f"Phenotypic shift ({layer or 'X'} units)",
-        yaxis_title="-log10(p-value)",
-        width=950,
-        height=650,
-    )
-
-    # Boxplots for top hits
-    combined = pd.concat(
-        [
-            drug_df[top_hits.index].assign(Condition=treatment),
-            ctrl_df[top_hits.index].assign(Condition=control_value),
-        ],
-        axis=0,
-    )
-    melted = combined.melt(id_vars="Condition", var_name="Feature", value_name="Value")
-    condition_order = [control_value, treatment]
-
-    boxplot = px.box(
-        melted,
-        x="Feature",
-        y="Value",
-        color="Condition",
-        points="all",
-        category_orders={"Condition": condition_order},
-        title=f"Top {top_n} Features: {treatment} vs {control_value}",
-        width=1100,
-        height=700,
-    )
-    boxplot.update_layout(
-        xaxis_tickangle=45,
-        yaxis_title=f"Feature intensity ({layer or 'X'})",
-    )
-
-    if show:
-        volcano.show()
-        boxplot.show()
-
-    return {
-        "results": results,
-        "top_hits": top_hits,
-        "volcano": volcano,
-        "boxplot": boxplot,
-    }
+def _bh_fdr(p_values: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg FDR correction."""
+    m = len(p_values)
+    order = np.argsort(p_values)
+    ranked = p_values[order]
+    q = ranked * m / np.arange(1, m + 1)
+    q = np.minimum.accumulate(q[::-1])[::-1]
+    q = np.clip(q, 0.0, 1.0)
+    out = np.empty_like(q)
+    out[order] = q
+    return out
 
 
 def visualize_drug_effect(
@@ -282,32 +160,188 @@ def visualize_drug_effect(
     control_value: str = "DMSO",
     layer: str | None = "normalized",
     top_n: int = 5,
-    pvalue_threshold: float = 0.01,
-    effect_threshold: float = 1.0,
+    qvalue_threshold: float = 0.05,
+    effect_threshold: float = 0.0,
+    legend: bool = True,
     show: bool = True,
-) -> dict[str, Any]:
+) -> pd.DataFrame:
     """
-    Generate volcano plot + top-feature boxplots for treatment(s) vs control.
+    Generate volcano + boxplots for selected treatment(s) vs control and
+    return a top-features results table.
 
-    Example
-    -------
-    ``cpt.tl.visualize_drug_effect(adata, treatment=["Triptonide", "Triptolide"])``
+    When `treatment` is a list, all listed treatments are combined into one
+    treatment group for the statistical test.
     """
+    if treatment_key not in adata.obs.columns:
+        raise KeyError(f"Column '{treatment_key}' not found in adata.obs.")
+
+    if top_n < 1:
+        raise ValueError("top_n must be >= 1.")
+    if not (0 < qvalue_threshold <= 1):
+        raise ValueError("qvalue_threshold must be in (0, 1].")
+    if effect_threshold < 0:
+        raise ValueError("effect_threshold must be >= 0.")
+
     treatments = [treatment] if isinstance(treatment, str) else list(treatment)
     if len(treatments) == 0:
         raise ValueError("treatment cannot be empty.")
+    treatments = list(dict.fromkeys([str(t) for t in treatments]))
+    treatment_label = ", ".join(treatments)
 
-    output: dict[str, Any] = {}
-    for tx in treatments:
-        output[tx] = _drug_effect_single(
-            adata=adata,
-            treatment=tx,
-            treatment_key=treatment_key,
-            control_value=control_value,
-            layer=layer,
-            top_n=top_n,
-            pvalue_threshold=pvalue_threshold,
-            effect_threshold=effect_threshold,
-            show=show,
+    X = _get_data_matrix(adata, layer=layer)
+    frame = pd.DataFrame(X, columns=adata.var_names, index=adata.obs_names)
+    frame[treatment_key] = adata.obs[treatment_key].astype(str).values
+
+    treatment_mask = frame[treatment_key].isin(treatments)
+    control_mask = frame[treatment_key] == str(control_value)
+    drug_df = frame[treatment_mask].drop(columns=treatment_key)
+    ctrl_df = frame[control_mask].drop(columns=treatment_key)
+
+    if len(drug_df) < 2 or len(ctrl_df) < 2:
+        raise ValueError(
+            f"Not enough replicates for treatment '{treatment_label}' vs control '{control_value}'. "
+            f"Need at least 2 wells each."
         )
-    return output
+
+    effect_size = drug_df.mean(axis=0) - ctrl_df.mean(axis=0)
+    _, p_vals = stats.ttest_ind(drug_df, ctrl_df, axis=0, equal_var=False, nan_policy="omit")
+    p_vals = np.nan_to_num(p_vals, nan=1.0, posinf=1.0, neginf=1.0)
+    p_vals = np.clip(p_vals, np.finfo(np.float64).tiny, 1.0)
+    q_vals = _bh_fdr(p_vals.astype(np.float64))
+    q_vals = np.clip(q_vals, np.finfo(np.float64).tiny, 1.0)
+    log_p = -np.log10(p_vals)
+    log_q = -np.log10(q_vals)
+
+    results = pd.DataFrame(
+        {
+            "feature": adata.var_names,
+            "effect_size": effect_size.values,
+            "p_value": p_vals,
+            "adjusted_p_value": q_vals,
+            "log_p_value": log_p,
+            "log_q_value": log_q,
+        }
+    ).set_index("feature")
+
+    top_hits = (
+        results.assign(abs_effect=np.abs(results["effect_size"]))
+        .sort_values(["adjusted_p_value", "abs_effect"], ascending=[True, False])
+        .head(top_n)
+        .drop(columns=["abs_effect"])
+    )
+    sig_mask = (results["adjusted_p_value"] < qvalue_threshold) & (
+        results["effect_size"].abs() >= effect_threshold
+    )
+    sig_results = results[sig_mask]
+
+    # Volcano plot
+    volcano = go.Figure()
+    volcano.add_trace(
+        go.Scattergl(
+            x=results["effect_size"],
+            y=results["log_q_value"],
+            mode="markers",
+            name="All features",
+            marker={"color": "lightgray", "size": 6, "opacity": 0.6},
+            hovertemplate="feature=%{text}<br>effect=%{x:.3f}<br>-log10(q)=%{y:.3f}<extra></extra>",
+            text=results.index,
+        )
+    )
+    volcano.add_trace(
+        go.Scattergl(
+            x=sig_results["effect_size"],
+            y=sig_results["log_q_value"],
+            mode="markers",
+            name=f"q<{qvalue_threshold}",
+            marker={"color": "firebrick", "size": 7, "opacity": 0.85},
+            hovertemplate="feature=%{text}<br>effect=%{x:.3f}<br>-log10(q)=%{y:.3f}<extra></extra>",
+            text=sig_results.index,
+        )
+    )
+    volcano.add_trace(
+        go.Scatter(
+            x=top_hits["effect_size"],
+            y=top_hits["log_q_value"],
+            mode="markers+text",
+            name=f"Top {top_n}",
+            text=top_hits.index.tolist(),
+            textposition="top center",
+            marker={"color": "red", "size": 9, "line": {"color": "black", "width": 1}},
+            hovertemplate="feature=%{text}<br>effect=%{x:.3f}<br>-log10(q)=%{y:.3f}<extra></extra>",
+        )
+    )
+    volcano.add_hline(
+        y=-np.log10(max(qvalue_threshold, np.finfo(np.float64).tiny)),
+        line_dash="dot",
+        line_color="royalblue",
+        annotation_text=f"q={qvalue_threshold}",
+    )
+    volcano.add_vline(x=0, line_dash="dash", line_color="gray")
+    volcano.update_layout(
+        title=f"Drug Effect Volcano: {treatment_label} vs {control_value}",
+        xaxis_title=f"Phenotypic shift ({layer or 'X'} units)",
+        yaxis_title="-log10(q-value)",
+        width=950,
+        height=650,
+        showlegend=legend,
+    )
+
+    # Boxplots for top hits with overlaid points (aligned by trace).
+    combined = pd.concat(
+        [
+            drug_df[top_hits.index].assign(Condition=treatment_label),
+            ctrl_df[top_hits.index].assign(Condition=control_value),
+        ],
+        axis=0,
+    )
+    melted = combined.melt(id_vars="Condition", var_name="Feature", value_name="Value")
+    condition_order = [control_value, treatment_label]
+
+    color_map = {control_value: "#636EFA", treatment_label: "#EF553B"}
+    boxplot = go.Figure()
+    for cond in condition_order:
+        cond_df = melted[melted["Condition"] == cond]
+        boxplot.add_trace(
+            go.Box(
+                x=cond_df["Feature"],
+                y=cond_df["Value"],
+                name=cond,
+                marker_color=color_map[cond],
+                boxpoints="all",
+                jitter=0.35,
+                pointpos=0.0,
+                whiskerwidth=0.2,
+                line_width=1.5,
+                fillcolor=color_map[cond],
+                opacity=0.55,
+            )
+        )
+    boxplot.update_layout(
+        title=f"Top {top_n} Features: {treatment_label} vs {control_value}",
+        boxmode="group",
+        width=1100,
+        height=700,
+        xaxis_tickangle=45,
+        xaxis=dict(categoryorder="array", categoryarray=top_hits.index.tolist(), title="Feature"),
+        yaxis_title=f"Feature intensity ({layer or 'X'})",
+        legend_title_text="Condition",
+        showlegend=legend,
+    )
+
+    if show:
+        volcano.show()
+        boxplot.show()
+
+    top_table = (
+        top_hits.reset_index()
+        .rename(
+            columns={
+                "feature": "Feature",
+                "effect_size": "Effect Size",
+                "p_value": "P-value",
+                "adjusted_p_value": "Adjusted P-value",
+            }
+        )
+        .loc[:, ["Feature", "Effect Size", "P-value", "Adjusted P-value"]]
+    )
+    return top_table

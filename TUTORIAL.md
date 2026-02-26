@@ -135,6 +135,7 @@ Plot the embedding with Plotly:
 ```python
 cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")
 cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)
+cpt.tl.scatter(adata, color="MOA", use_rep="X_umap", legend=False)
 ```
 
 ---
@@ -144,19 +145,22 @@ cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)
 Use CPTools tooling for treatment-vs-control feature interpretation:
 
 ```python
-cpt.tl.visualize_drug_effect(
+top_hits = cpt.tl.visualize_drug_effect(
     adata,
     treatment=["Triptonide", "Triptolide"],
     treatment_key="Treatment",
     control_value="DMSO",
     layer="normalized",
     top_n=5,
+    qvalue_threshold=0.05,
+    legend=False,
 )
 ```
 
 This generates:
-- Volcano plots per treatment vs control
+- Volcano plot for combined selected treatments vs control
 - Boxplots for top differentiating features
+- A results table: Feature, Effect Size, P-value, Adjusted P-value
 
 ---
 
@@ -200,13 +204,15 @@ cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")
 cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)
 
 # 6) Drug-effect visualization
-cpt.tl.visualize_drug_effect(
+top_hits = cpt.tl.visualize_drug_effect(
     adata,
     treatment=["Triptonide", "Triptolide"],
     treatment_key="Treatment",
     control_value="DMSO",
     layer="normalized",
     top_n=5,
+    qvalue_threshold=0.05,
+    legend=False,
 )
 ```
 

@@ -153,90 +153,6 @@ def _bh_fdr(p_values: np.ndarray) -> np.ndarray:
     return out
 
 
-def _build_nonoverlap_annotations(
-    x_vals: np.ndarray,
-    y_vals: np.ndarray,
-    labels: list[str],
-) -> list[dict[str, Any]]:
-    """
-    Build simple collision-aware label annotations for volcano plots.
-    """
-    placed: list[tuple[float, float]] = []
-    annotations: list[dict[str, Any]] = []
-
-    if len(x_vals) == 0:
-        return annotations
-
-    x_span = float(np.nanmax(x_vals) - np.nanmin(x_vals))
-    y_span = float(np.nanmax(y_vals) - np.nanmin(y_vals))
-    # Data-space spacing heuristics.
-    min_dx = max(0.8, 0.03 * max(x_span, 1.0))
-    min_dy = max(0.2, 0.05 * max(y_span, 1.0))
-    y_lift = max(0.25, 0.06 * max(y_span, 1.0))
-    x_offsets = [0.0, -min_dx, min_dx, -2 * min_dx, 2 * min_dx]
-
-    for i, (x, y, label) in enumerate(zip(x_vals, y_vals, labels)):
-        # Candidate anchor starts above point; then try nearby lanes.
-        anchor_x = float(x)
-        anchor_y = float(y + y_lift)
-        trial = 0
-        while trial < 40:
-            shift_x = x_offsets[trial % len(x_offsets)]
-            shift_y = (trial // len(x_offsets)) * min_dy
-            cand_x = anchor_x + shift_x
-            cand_y = anchor_y + shift_y
-            overlaps = any(abs(cand_x - px) < min_dx and abs(cand_y - py) < min_dy for px, py in placed)
-            if not overlaps:
-                placed.append((cand_x, cand_y))
-                annotations.append(
-                    {
-                        "x": cand_x,
-                        "y": cand_y,
-                        "text": label,
-                        "showarrow": True,
-                        "ax": x,
-                        "ay": y,
-                        "axref": "x",
-                        "ayref": "y",
-                        "arrowhead": 0,
-                        "arrowsize": 1,
-                        "arrowwidth": 1,
-                        "arrowcolor": "black",
-                        "font": {"size": 11, "color": "black"},
-                        "bgcolor": "rgba(255,255,255,0.65)",
-                        "bordercolor": "rgba(0,0,0,0.25)",
-                        "borderwidth": 1,
-                    }
-                )
-                break
-            trial += 1
-
-        # Fallback if crowding is extreme.
-        if trial >= 40:
-            fallback_y = anchor_y + (i + 1) * min_dy
-            annotations.append(
-                {
-                    "x": anchor_x,
-                    "y": fallback_y,
-                    "text": label,
-                    "showarrow": True,
-                    "ax": x,
-                    "ay": y,
-                    "axref": "x",
-                    "ayref": "y",
-                    "arrowhead": 0,
-                    "arrowsize": 1,
-                    "arrowwidth": 1,
-                    "arrowcolor": "black",
-                    "font": {"size": 11, "color": "black"},
-                    "bgcolor": "rgba(255,255,255,0.65)",
-                    "bordercolor": "rgba(0,0,0,0.25)",
-                    "borderwidth": 1,
-                }
-            )
-    return annotations
-
-
 def visualize_drug_effect(
     adata: ad.AnnData,
     treatment: str | Sequence[str],
@@ -348,7 +264,12 @@ def visualize_drug_effect(
             y=top_hits["log_q_value"],
             mode="markers",
             name=f"Top {top_n}",
-            marker={"color": "red", "size": 9, "line": {"color": "black", "width": 1}},
+            marker={
+                "symbol": "circle-open",
+                "color": "red",
+                "size": 12,
+                "line": {"color": "black", "width": 2},
+            },
             hovertemplate="feature=%{text}<br>effect=%{x:.3f}<br>-log10(q)=%{y:.3f}<extra></extra>",
             text=top_hits.index.tolist(),
         )
@@ -368,12 +289,6 @@ def visualize_drug_effect(
         height=650,
         showlegend=legend,
     )
-    label_annotations = _build_nonoverlap_annotations(
-        x_vals=top_hits["effect_size"].to_numpy(dtype=float),
-        y_vals=top_hits["log_q_value"].to_numpy(dtype=float),
-        labels=top_hits.index.tolist(),
-    )
-    volcano.update_layout(annotations=label_annotations)
 
     # Boxplots for top hits with overlaid points (aligned by trace).
     combined = pd.concat(
@@ -402,7 +317,7 @@ def visualize_drug_effect(
                 whiskerwidth=0.2,
                 line_width=1.5,
                 fillcolor=color_map[cond],
-                opacity=0.55,
+                opacity=0.35,
             )
         )
     boxplot.update_layout(

@@ -210,6 +210,7 @@ def snr_feature_selection(
     keep_top_fraction: float = 0.2,
     quantile_threshold: float | None = None,
     min_replicates: int = 2,
+    noise_aggregation: str = "pooled",
     source_layer: str | None = None,
     subset: bool = False,
     inplace: bool = True,
@@ -221,12 +222,18 @@ def snr_feature_selection(
     while vary between different treatments (high signal).
 
     Signal = variance of treatment means (excluding controls).
-    Noise = mean within-treatment (replicates) variance (including controls).
+    Noise = within-treatment (replicates) variance (including controls),
+    aggregated across groups via `noise_aggregation`:
+      - ``"pooled"``: weighted by (n_group - 1), preferred for unequal replicate counts
+      - ``"mean"``: simple mean of group variances
+      - ``"median"``: robust median of group variances
     """
     if treatment_key not in adata.obs.columns:
         raise KeyError(f"Missing '{treatment_key}' in adata.obs")
     if not (0 < keep_top_fraction <= 1):
         raise ValueError("keep_top_fraction must be in (0, 1].")
+    if noise_aggregation not in {"pooled", "mean", "median"}:
+        raise ValueError("noise_aggregation must be one of: 'pooled', 'mean', 'median'.")
 
     X = _matrix_from_layer(adata, source_layer=source_layer)
     feature_names = adata.var_names.to_list()
@@ -247,9 +254,18 @@ def snr_feature_selection(
     # Calculate Signal (Variance Between Treatment Means)
     # Group by Treatment -> Calculate Mean Vector for each Drug -> Calculate Variance of those Means
     signal = non_controls.groupby(treatment_key)[feature_names].mean().var(axis=0, ddof=1).fillna(0.0)
-    # Calculate Noise (Average Variance Within Replicates)
-    # Group by Treatment -> Calculate Variance Vector for each Drug -> Average these Variances
-    noise = df.groupby(treatment_key)[feature_names].var(ddof=1).mean(axis=0).fillna(0.0)
+    # Calculate Noise (Within-group replicate variance)
+    # Group by Treatment -> variance vector per group -> aggregate across groups.
+    var_by_group = df.groupby(treatment_key)[feature_names].var(ddof=1)
+    if noise_aggregation == "pooled":
+        group_sizes = df.groupby(treatment_key).size().reindex(var_by_group.index)
+        weights = (group_sizes - 1).clip(lower=1).astype(np.float64)
+        weighted_sum = var_by_group.mul(weights, axis=0).sum(axis=0)
+        noise = (weighted_sum / float(weights.sum())).fillna(0.0)
+    elif noise_aggregation == "median":
+        noise = var_by_group.median(axis=0).fillna(0.0)
+    else:
+        noise = var_by_group.mean(axis=0).fillna(0.0)
     snr = signal / (noise + 1e-9)
 
     if quantile_threshold is not None:
@@ -281,6 +297,7 @@ def snr_feature_selection(
         "keep_top_fraction": keep_top_fraction,
         "quantile_threshold": quantile_threshold,
         "min_replicates": min_replicates,
+        "noise_aggregation": noise_aggregation,
         "subset": subset,
     }
 

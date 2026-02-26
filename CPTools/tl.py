@@ -158,6 +158,7 @@ def visualize_drug_effect(
     treatment: str | Sequence[str],
     treatment_key: str = "Treatment",
     control_value: str = "DMSO",
+    batch_key: str = "Batch",
     layer: str | None = "normalized",
     top_n: int = 5,
     qvalue_threshold: float = 0.05,
@@ -166,14 +167,18 @@ def visualize_drug_effect(
     show: bool = True,
 ) -> pd.DataFrame:
     """
-    Generate volcano + boxplots for selected treatment(s) vs control and
-    return a top-features results table.
+    Generate volcano + boxplots for selected treatment(s) vs matched controls
+    and return a top-features results table.
 
     When `treatment` is a list, all listed treatments are combined into one
     treatment group for the statistical test.
+    Controls are batch-matched by default: only `control_value` wells from
+    the same batches as the treatment wells are used.
     """
     if treatment_key not in adata.obs.columns:
         raise KeyError(f"Column '{treatment_key}' not found in adata.obs.")
+    if batch_key not in adata.obs.columns:
+        raise KeyError(f"Column '{batch_key}' not found in adata.obs.")
 
     if top_n < 1:
         raise ValueError("top_n must be >= 1.")
@@ -191,11 +196,26 @@ def visualize_drug_effect(
     X = _get_data_matrix(adata, layer=layer)
     frame = pd.DataFrame(X, columns=adata.var_names, index=adata.obs_names)
     frame[treatment_key] = adata.obs[treatment_key].astype(str).values
+    frame[batch_key] = adata.obs[batch_key].astype(str).values
 
     treatment_mask = frame[treatment_key].isin(treatments)
-    control_mask = frame[treatment_key] == str(control_value)
-    drug_df = frame[treatment_mask].drop(columns=treatment_key)
-    ctrl_df = frame[control_mask].drop(columns=treatment_key)
+    if not np.any(treatment_mask):
+        raise ValueError(
+            f"No wells found for treatment(s): {treatments} in column '{treatment_key}'."
+        )
+    treatment_batches = pd.unique(frame.loc[treatment_mask, batch_key]).tolist()
+
+    control_mask = (frame[treatment_key] == str(control_value)) & (frame[batch_key].isin(treatment_batches))
+    control_batches = set(pd.unique(frame.loc[control_mask, batch_key]).tolist())
+    missing_control_batches = sorted(set(treatment_batches) - control_batches)
+    if missing_control_batches:
+        raise ValueError(
+            "Matched controls are missing for treatment batches: "
+            f"{missing_control_batches}. Expected '{control_value}' in '{treatment_key}'."
+        )
+
+    drug_df = frame[treatment_mask].drop(columns=[treatment_key, batch_key])
+    ctrl_df = frame[control_mask].drop(columns=[treatment_key, batch_key])
 
     if len(drug_df) < 2 or len(ctrl_df) < 2:
         raise ValueError(
@@ -317,7 +337,7 @@ def visualize_drug_effect(
                 whiskerwidth=0.2,
                 line_width=1.5,
                 fillcolor=color_map[cond],
-                opacity=0.35,
+                opacity=0.7,
             )
         )
     boxplot.update_layout(

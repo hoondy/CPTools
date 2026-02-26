@@ -105,6 +105,7 @@ top_hits = cpt.tl.visualize_drug_effect(
     treatment=["Triptonide", "Triptolide"],
     treatment_key="Treatment",
     control_value="DMSO",
+    batch_key="Batch",  # uses matched controls from these treatment batches
     layer="normalized",
     top_n=5,
     qvalue_threshold=0.05,

@@ -337,7 +337,7 @@ def funnel(
     inplace: bool = True,
 ) -> ad.AnnData:
     """
-    Clean -> Normalize -> De-correlate -> Quality Control pipeline.
+    A series of filters and feature selections.
 
     By default, this function **does not remove features**. It marks selected
     features in ``adata.var["highly_variable"]``.

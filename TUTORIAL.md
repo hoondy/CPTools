@@ -88,7 +88,7 @@ it marks them via:
 Use `subset=True` only if you explicitly want to remove non-selected features.
 
 The same behavior applies to individual filters:
-- `blocklist_filter`, `drop_nan_features`, `variance_filter`, `correlation_filter`
+- `blocklist_filter`, `nan_filter`, `variance_filter`, `correlation_filter`
 - default: annotate pass/fail masks in `adata.var`
 - `subset=True`: physically subset features
 

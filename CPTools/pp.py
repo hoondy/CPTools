@@ -120,7 +120,7 @@ def blocklist_filter(
     return target
 
 
-def drop_nan_features(
+def nan_filter(
     adata: ad.AnnData,
     source_layer: str | None = None,
     subset: bool = False,
@@ -364,26 +364,26 @@ def funnel(
     before = working.n_vars
     blocklist_filter(working, subset=True, inplace=True)
     if verbose:
-        removed = before - working.n_vars
-        print(f"[funnel] blocklist_filter: removed {removed}, remaining {working.n_vars}")
+        filtered = before - working.n_vars
+        print(f"[funnel] blocklist_filter: filtered {filtered}, remaining {working.n_vars}")
 
     before = working.n_vars
-    drop_nan_features(working, subset=True, inplace=True)
+    nan_filter(working, subset=True, inplace=True)
     if verbose:
-        removed = before - working.n_vars
-        print(f"[funnel] drop_nan_features: removed {removed}, remaining {working.n_vars}")
+        filtered = before - working.n_vars
+        print(f"[funnel] nan_filter: filtered {filtered}, remaining {working.n_vars}")
 
     before = working.n_vars
     variance_filter(working, threshold=variance_threshold, subset=True, inplace=True)
     if verbose:
-        removed = before - working.n_vars
-        print(f"[funnel] variance_filter: removed {removed}, remaining {working.n_vars}")
+        filtered = before - working.n_vars
+        print(f"[funnel] variance_filter: filtered {filtered}, remaining {working.n_vars}")
 
     before = working.n_vars
     correlation_filter(working, threshold=corr_threshold, subset=True, inplace=True)
     if verbose:
-        removed = before - working.n_vars
-        print(f"[funnel] correlation_filter: removed {removed}, remaining {working.n_vars}")
+        filtered = before - working.n_vars
+        print(f"[funnel] correlation_filter: filtered {filtered}, remaining {working.n_vars}")
 
     snr_feature_selection(
         working,
@@ -455,3 +455,5 @@ def funnel(
 # Aliases mirroring notebook naming.
 robust_zscore_normalize = robust_zscore_norm
 feature_selection_by_replicates = snr_feature_selection
+# Backward-compatible alias.
+drop_nan_features = nan_filter

@@ -67,7 +67,7 @@ cpt.pp.funnel(adata, batch_key="Batch", treatment_key="Treatment", control_value
 ```
 
 Individual filters follow the same rule:
-- `cpt.pp.blocklist_filter(...)`, `cpt.pp.drop_nan_features(...)`,
+- `cpt.pp.blocklist_filter(...)`, `cpt.pp.nan_filter(...)`,
   `cpt.pp.variance_filter(...)`, `cpt.pp.correlation_filter(...)`
 - default is annotation-only (`subset=False`)
 - pass `subset=True` to actually remove features

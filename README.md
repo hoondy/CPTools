@@ -6,6 +6,50 @@ Cell Painting utilities for:
 - Feature filtering and reproducibility-aware selection
 - Plotly-based visualization helpers
 
+## Core Philosophy
+
+Cell Painting and morphological profiling produce very high-dimensional, highly correlated, and often noisy data.  
+If raw extracted features are used directly for clustering or machine learning, models can overfit technical artifacts (batch, plate position, segmentation instability) rather than biology.
+
+CPTools uses a strict funnel to convert raw measurements into stable, reproducible biological signal:
+
+1. `robust_zscore_norm`: Robust plate-wise normalization
+- Problem: plate-to-plate intensity drift from staining, imaging, and instrument variation.
+- Method: for each batch, normalize each feature against control wells (default `DMSO`) using median and MAD.
+- Why it matters: aligns all batches to a shared baseline where `0` represents control phenotype, while resisting outliers.
+
+2. `blocklist_filter`: Remove known technical artifact features
+- Problem: some extracted columns are technical/positional rather than biological.
+- Method: drop/flag known artifact patterns (for example location/execution-style features).
+- Why it matters: prevents models from learning acquisition artifacts.
+
+3. `nan_filter`: Remove broken/unstable features
+- Problem: NaN features arise from segmentation failures or invalid transforms.
+- Method: drop/flag features containing non-finite values.
+- Why it matters: avoids failures and instability in PCA/UMAP/whitening.
+
+4. `variance_filter`: Remove low-information features
+- Problem: features with very low variance carry little or no perturbation signal.
+- Method: in `funnel`, `variance_threshold` is treated as a variance quantile (for example `0.01` removes bottom 1% variance features).
+- Why it matters: improves efficiency and denoises feature space.
+
+5. `correlation_filter`: De-redundancy
+- Problem: many morphology features are near-duplicates.
+- Method: keep high-variance representatives from correlated feature clusters.
+- Why it matters: avoids overweighting one biological axis (for example "size") in distance-based methods.
+
+6. `snr_feature_selection`: Reproducibility-based selection
+- Problem: a feature can vary strongly but still be noisy if replicates disagree.
+- Method: signal = variance across treatment means (excluding controls); noise = within-treatment replicate variance (including controls); rank by SNR.
+- Why it matters: prioritizes features that are both perturbation-responsive and replicate-consistent.
+
+7. `zca_whiten`: Control-defined whitening
+- Problem: multivariate covariance structure can hide subtle but meaningful phenotypes.
+- Method: use matched controls to estimate covariance and whiten the feature space.
+- Why it matters: improves geometric comparability so distances better reflect biological dissimilarity.
+
+By default, `funnel` annotates features (`adata.var["highly_variable"]`) instead of removing them; set `subset=True` to physically subset.
+
 ## Install
 
 ```bash

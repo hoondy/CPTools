@@ -835,3 +835,276 @@ def visualize_drug_effect(
         .loc[:, ["Feature", "Effect Size", "P-value", "Adjusted P-value"]]
     )
     return top_table
+
+
+def visualize_drug_effect_rescue(
+    adata: ad.AnnData,
+    treatment: str | Sequence[str],
+    rescue: str | Sequence[str],
+    treatment_key: str = "Treatment",
+    control_value: str = "DMSO",
+    batch_key: str = "Batch",
+    layer: str | None = "normalized",
+    top_n: int = 5,
+    qvalue_threshold: float = 0.05,
+    effect_threshold: float = 0.0,
+    legend: bool = True,
+    show: bool = True,
+) -> pd.DataFrame:
+    """
+    Generate treatment-vs-control volcano plot and boxplots including rescue groups.
+
+    Volcano statistics are computed exactly as treatment(s) vs matched controls.
+    Rescue treatment(s) are added only to the top-feature boxplot panel.
+    """
+    if treatment_key not in adata.obs.columns:
+        raise KeyError(f"Column '{treatment_key}' not found in adata.obs.")
+    if batch_key not in adata.obs.columns:
+        raise KeyError(f"Column '{batch_key}' not found in adata.obs.")
+    if top_n < 1:
+        raise ValueError("top_n must be >= 1.")
+    if not (0 < qvalue_threshold <= 1):
+        raise ValueError("qvalue_threshold must be in (0, 1].")
+    if effect_threshold < 0:
+        raise ValueError("effect_threshold must be >= 0.")
+
+    treatments = _normalize_treatments(treatment)
+    assert treatments is not None
+    rescue_list = _normalize_treatments(rescue)
+    assert rescue_list is not None
+
+    treatments = [t for t in treatments if t != str(control_value)]
+    if len(treatments) == 0:
+        raise ValueError("No non-control treatment(s) provided.")
+
+    rescue_list = [r for r in rescue_list if r != str(control_value)]
+    rescue_list = [r for r in rescue_list if r not in treatments]
+    if len(rescue_list) == 0:
+        raise ValueError(
+            "No valid rescue treatment(s) left after removing control and treatment overlap."
+        )
+
+    treatment_label = ", ".join(treatments)
+    rescue_label = ", ".join(rescue_list)
+
+    X = _get_data_matrix(adata, layer=layer)
+    frame = pd.DataFrame(X, columns=adata.var_names, index=adata.obs_names)
+    frame[treatment_key] = adata.obs[treatment_key].astype(str).values
+    frame[batch_key] = adata.obs[batch_key].astype(str).values
+
+    available_treatments = set(pd.unique(frame[treatment_key]).tolist())
+    missing_treatments = [t for t in treatments if t not in available_treatments]
+    if missing_treatments:
+        raise ValueError(
+            f"Treatment(s) not found in '{treatment_key}': {missing_treatments}"
+        )
+    missing_rescues = [r for r in rescue_list if r not in available_treatments]
+    if missing_rescues:
+        raise ValueError(
+            f"Rescue treatment(s) not found in '{treatment_key}': {missing_rescues}"
+        )
+
+    # Volcano stats use treatment vs matched controls (same behavior as visualize_drug_effect).
+    treatment_mask = frame[treatment_key].isin(treatments)
+    treatment_batches = pd.unique(frame.loc[treatment_mask, batch_key]).tolist()
+    control_mask_treatment = (frame[treatment_key] == str(control_value)) & (
+        frame[batch_key].isin(treatment_batches)
+    )
+    control_batches_treatment = set(pd.unique(frame.loc[control_mask_treatment, batch_key]).tolist())
+    missing_control_batches = sorted(set(treatment_batches) - control_batches_treatment)
+    if missing_control_batches:
+        raise ValueError(
+            "Matched controls are missing for treatment batches: "
+            f"{missing_control_batches}. Expected '{control_value}' in '{treatment_key}'."
+        )
+
+    drug_df = frame[treatment_mask].drop(columns=[treatment_key, batch_key])
+    ctrl_df = frame[control_mask_treatment].drop(columns=[treatment_key, batch_key])
+    if len(drug_df) < 2 or len(ctrl_df) < 2:
+        raise ValueError(
+            f"Not enough replicates for treatment '{treatment_label}' vs control '{control_value}'. "
+            "Need at least 2 wells each."
+        )
+
+    effect_size = drug_df.mean(axis=0) - ctrl_df.mean(axis=0)
+    _, p_vals = stats.ttest_ind(drug_df, ctrl_df, axis=0, equal_var=False, nan_policy="omit")
+    p_vals = np.nan_to_num(p_vals, nan=1.0, posinf=1.0, neginf=1.0)
+    p_vals = np.clip(p_vals, np.finfo(np.float64).tiny, 1.0)
+    q_vals = _bh_fdr(p_vals.astype(np.float64))
+    q_vals = np.clip(q_vals, np.finfo(np.float64).tiny, 1.0)
+    log_p = -np.log10(p_vals)
+    log_q = -np.log10(q_vals)
+
+    results = pd.DataFrame(
+        {
+            "feature": adata.var_names,
+            "effect_size": effect_size.values,
+            "p_value": p_vals,
+            "adjusted_p_value": q_vals,
+            "log_p_value": log_p,
+            "log_q_value": log_q,
+        }
+    ).set_index("feature")
+
+    top_hits = (
+        results.assign(abs_effect=np.abs(results["effect_size"]))
+        .sort_values(["adjusted_p_value", "abs_effect"], ascending=[True, False])
+        .head(top_n)
+        .drop(columns=["abs_effect"])
+    )
+    sig_mask = (results["adjusted_p_value"] < qvalue_threshold) & (
+        results["effect_size"].abs() >= effect_threshold
+    )
+    sig_results = results[sig_mask]
+
+    volcano = go.Figure()
+    volcano.add_trace(
+        go.Scattergl(
+            x=results["effect_size"],
+            y=results["log_q_value"],
+            mode="markers",
+            name="All features",
+            marker={"color": "lightgray", "size": 6, "opacity": 0.6},
+            hovertemplate="feature=%{text}<br>effect=%{x:.3f}<br>-log10(q)=%{y:.3f}<extra></extra>",
+            text=results.index,
+        )
+    )
+    volcano.add_trace(
+        go.Scattergl(
+            x=sig_results["effect_size"],
+            y=sig_results["log_q_value"],
+            mode="markers",
+            name=f"q<{qvalue_threshold}",
+            marker={"color": "firebrick", "size": 7, "opacity": 0.85},
+            hovertemplate="feature=%{text}<br>effect=%{x:.3f}<br>-log10(q)=%{y:.3f}<extra></extra>",
+            text=sig_results.index,
+        )
+    )
+    volcano.add_trace(
+        go.Scatter(
+            x=top_hits["effect_size"],
+            y=top_hits["log_q_value"],
+            mode="markers",
+            name=f"Top {top_n}",
+            marker={
+                "symbol": "circle-open",
+                "color": "red",
+                "size": 12,
+                "line": {"color": "black", "width": 2},
+            },
+            hovertemplate="feature=%{text}<br>effect=%{x:.3f}<br>-log10(q)=%{y:.3f}<extra></extra>",
+            text=top_hits.index.tolist(),
+        )
+    )
+    volcano.add_hline(
+        y=-np.log10(max(qvalue_threshold, np.finfo(np.float64).tiny)),
+        line_dash="dot",
+        line_color="royalblue",
+        annotation_text=f"q={qvalue_threshold}",
+    )
+    volcano.add_vline(x=0, line_dash="dash", line_color="gray")
+    volcano.update_layout(
+        title=f"Drug Effect Volcano: {treatment_label} vs {control_value}",
+        xaxis_title=f"Phenotypic shift ({layer or 'X'} units)",
+        yaxis_title="-log10(q-value)",
+        width=950,
+        height=650,
+        showlegend=legend,
+    )
+
+    # Boxplot includes controls + treatment + rescue groups.
+    rescue_masks = {r: frame[treatment_key] == r for r in rescue_list}
+    all_batches_for_box: set[str] = set(treatment_batches)
+    for r in rescue_list:
+        all_batches_for_box.update(pd.unique(frame.loc[rescue_masks[r], batch_key]).tolist())
+
+    control_mask_box = (frame[treatment_key] == str(control_value)) & (
+        frame[batch_key].isin(sorted(all_batches_for_box))
+    )
+    if not np.any(control_mask_box):
+        raise ValueError(
+            "No controls available for boxplot across treatment/rescue batches."
+        )
+    ctrl_box_df = frame[control_mask_box].drop(columns=[treatment_key, batch_key])
+
+    missing_control_box = sorted(all_batches_for_box - set(pd.unique(frame.loc[control_mask_box, batch_key]).tolist()))
+    if missing_control_box:
+        warnings.warn(
+            "Some treatment/rescue batches do not have matched controls for boxplot context: "
+            f"{missing_control_box}",
+            stacklevel=2,
+        )
+
+    combined_frames: list[pd.DataFrame] = [
+        ctrl_box_df[top_hits.index].assign(Condition=str(control_value)),
+        drug_df[top_hits.index].assign(Condition=treatment_label),
+    ]
+
+    for r in rescue_list:
+        r_df = frame[rescue_masks[r]].drop(columns=[treatment_key, batch_key])
+        if r_df.empty:
+            continue
+        combined_frames.append(r_df[top_hits.index].assign(Condition=r))
+
+    combined = pd.concat(combined_frames, axis=0)
+    melted = combined.melt(id_vars="Condition", var_name="Feature", value_name="Value")
+
+    condition_order = [str(control_value), treatment_label, *rescue_list]
+    control_color = "#636EFA"
+    treatment_color = "#EF553B"
+    rescue_palette = [c for c in px.colors.qualitative.Plotly if c not in {control_color, treatment_color}]
+    if len(rescue_palette) == 0:
+        rescue_palette = px.colors.qualitative.D3
+    color_map = {str(control_value): control_color, treatment_label: treatment_color}
+    for idx, r in enumerate(rescue_list):
+        color_map[r] = rescue_palette[idx % len(rescue_palette)]
+
+    boxplot = go.Figure()
+    for cond in condition_order:
+        cond_df = melted[melted["Condition"] == cond]
+        if cond_df.empty:
+            continue
+        boxplot.add_trace(
+            go.Box(
+                x=cond_df["Feature"],
+                y=cond_df["Value"],
+                name=cond,
+                marker_color=color_map.get(cond, "#AAAAAA"),
+                boxpoints="all",
+                jitter=0.35,
+                pointpos=0.0,
+                whiskerwidth=0.2,
+                line_width=1.5,
+                fillcolor=color_map.get(cond, "#AAAAAA"),
+                opacity=0.8,
+            )
+        )
+    boxplot.update_layout(
+        title=f"Top {top_n} Features: {treatment_label} vs {control_value} with rescue ({rescue_label})",
+        boxmode="group",
+        width=1200,
+        height=700,
+        xaxis_tickangle=45,
+        xaxis=dict(categoryorder="array", categoryarray=top_hits.index.tolist(), title="Feature"),
+        yaxis_title=f"Feature intensity ({layer or 'X'})",
+        legend_title_text="Condition",
+        showlegend=legend,
+    )
+
+    if show:
+        volcano.show()
+        boxplot.show()
+
+    top_table = (
+        top_hits.reset_index()
+        .rename(
+            columns={
+                "feature": "Feature",
+                "effect_size": "Effect Size",
+                "p_value": "P-value",
+                "adjusted_p_value": "Adjusted P-value",
+            }
+        )
+        .loc[:, ["Feature", "Effect Size", "P-value", "Adjusted P-value"]]
+    )
+    return top_table

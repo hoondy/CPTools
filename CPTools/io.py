@@ -15,17 +15,31 @@ DEFAULT_FEATURE_PREFIX = "Nuclei Selected - "
 CONTROL_CONTENT_VALUES = {"c", "c_DM"}
 
 
+def _strip_bom(text: str) -> str:
+    return text.lstrip("\ufeff").strip()
+
+
+def _clean_table_strings(table: pd.DataFrame) -> pd.DataFrame:
+    """Remove BOM/whitespace artifacts from headers and string cells."""
+    out = table.copy()
+    out.columns = [_strip_bom(str(c)) for c in out.columns]
+    obj_cols = out.select_dtypes(include=["object", "string"]).columns
+    for col in obj_cols:
+        out[col] = out[col].map(lambda x: _strip_bom(x) if isinstance(x, str) else x)
+    return out
+
+
 def _read_table(path: str | Path) -> pd.DataFrame:
     """Read CSV/TSV-like tables using automatic delimiter detection."""
-    table = pd.read_csv(path, sep=None, engine="python")
+    table = pd.read_csv(path, sep=None, engine="python", encoding="utf-8-sig")
     table = table.loc[:, ~table.columns.astype(str).str.startswith("Unnamed")]
-    return table
+    return _clean_table_strings(table)
 
 
 def _read_harmony_table(path: str | Path) -> pd.DataFrame:
     path = Path(path)
     data_row_idx: int | None = None
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
+    with path.open("r", encoding="utf-8-sig", errors="replace") as handle:
         for idx, line in enumerate(handle):
             if line.strip() == "[Data]":
                 data_row_idx = idx
@@ -34,10 +48,10 @@ def _read_harmony_table(path: str | Path) -> pd.DataFrame:
     if data_row_idx is None:
         raise ValueError(f"Could not find [Data] section in: {path}")
 
-    table = pd.read_csv(path, sep="\t", skiprows=data_row_idx + 1)
+    table = pd.read_csv(path, sep="\t", skiprows=data_row_idx + 1, encoding="utf-8-sig")
     table = table.loc[:, ~table.columns.str.startswith("Unnamed")]
     table = table.dropna(axis=1, how="all")
-    return table
+    return _clean_table_strings(table)
 
 
 def _prepare_schema(

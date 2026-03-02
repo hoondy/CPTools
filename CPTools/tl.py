@@ -418,7 +418,7 @@ def rank_treatment_correlations(
         y="label",
         orientation="h",
         color="correlation",
-        color_continuous_scale="vlag",
+        color_continuous_scale="RdBu_r",
         range_color=(-1, 1),
         category_orders={"label": order},
         hover_data={"rank": True, "treatment": True, "section": True, "label": False},

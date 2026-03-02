@@ -153,6 +153,425 @@ def _bh_fdr(p_values: np.ndarray) -> np.ndarray:
     return out
 
 
+def _normalize_treatments(treatments: str | Sequence[str] | None) -> list[str] | None:
+    if treatments is None:
+        return None
+    if isinstance(treatments, str):
+        parsed = [treatments]
+    else:
+        parsed = list(treatments)
+    parsed = [str(t) for t in parsed]
+    parsed = list(dict.fromkeys(parsed))
+    if len(parsed) == 0:
+        raise ValueError("treatments cannot be empty.")
+    return parsed
+
+
+def treatment_vectors(
+    adata: ad.AnnData,
+    treatment_key: str = "Treatment",
+    control_value: str = "DMSO",
+    batch_key: str = "Batch",
+    layer: str | None = "normalized",
+    treatments: str | Sequence[str] | None = None,
+    use_highly_variable: bool = False,
+) -> pd.DataFrame:
+    """
+    Compute batch-matched control->treatment feature vectors.
+
+    For each treatment and each batch where that treatment appears:
+      vector(batch, treatment) = mean(treatment wells) - mean(control wells)
+    Final treatment vector is a treatment-well-count weighted mean across batches.
+    """
+    if treatment_key not in adata.obs.columns:
+        raise KeyError(f"Column '{treatment_key}' not found in adata.obs.")
+    if batch_key not in adata.obs.columns:
+        raise KeyError(f"Column '{batch_key}' not found in adata.obs.")
+
+    if use_highly_variable:
+        if "highly_variable" not in adata.var.columns:
+            raise KeyError("Column 'highly_variable' not found in adata.var.")
+        hv_mask = adata.var["highly_variable"].fillna(False).to_numpy(dtype=bool)
+        if not np.any(hv_mask):
+            raise ValueError("No features marked as highly_variable.")
+        feature_names = adata.var_names[hv_mask].tolist()
+    else:
+        feature_names = adata.var_names.tolist()
+
+    requested = _normalize_treatments(treatments)
+
+    X = _get_data_matrix(adata, layer=layer)
+    frame = pd.DataFrame(X, columns=adata.var_names, index=adata.obs_names)
+    frame = frame.loc[:, feature_names].copy()
+    frame[treatment_key] = adata.obs[treatment_key].astype(str).values
+    frame[batch_key] = adata.obs[batch_key].astype(str).values
+
+    all_treatments = pd.unique(frame[treatment_key]).tolist()
+    if requested is None:
+        target_treatments = [t for t in all_treatments if t != str(control_value)]
+    else:
+        missing = [t for t in requested if t not in all_treatments]
+        if missing:
+            raise ValueError(
+                f"Requested treatment(s) not found in '{treatment_key}': {missing}"
+            )
+        target_treatments = [t for t in requested if t != str(control_value)]
+        if len(target_treatments) == 0:
+            raise ValueError("No non-control treatments requested.")
+
+    vectors: list[np.ndarray] = []
+    index: list[str] = []
+    metadata_rows: list[dict[str, Any]] = []
+    skipped: list[str] = []
+
+    for trt in target_treatments:
+        trt_mask = frame[treatment_key] == trt
+        trt_batches = pd.unique(frame.loc[trt_mask, batch_key]).tolist()
+
+        batch_vectors: list[np.ndarray] = []
+        weights: list[float] = []
+        used_batches: list[str] = []
+
+        for batch in trt_batches:
+            batch_trt_mask = trt_mask & (frame[batch_key] == batch)
+            batch_ctrl_mask = (frame[treatment_key] == str(control_value)) & (frame[batch_key] == batch)
+            if not np.any(batch_ctrl_mask):
+                continue
+
+            trt_values = frame.loc[batch_trt_mask, feature_names]
+            ctrl_values = frame.loc[batch_ctrl_mask, feature_names]
+            delta = trt_values.mean(axis=0) - ctrl_values.mean(axis=0)
+            batch_vectors.append(delta.to_numpy(dtype=np.float64))
+            weights.append(float(trt_values.shape[0]))
+            used_batches.append(str(batch))
+
+        if len(batch_vectors) == 0:
+            skipped.append(trt)
+            continue
+
+        weights_arr = np.asarray(weights, dtype=np.float64)
+        trt_vector = np.average(np.vstack(batch_vectors), axis=0, weights=weights_arr)
+        vectors.append(trt_vector.astype(np.float32, copy=False))
+        index.append(str(trt))
+        metadata_rows.append(
+            {
+                "treatment": str(trt),
+                "n_batches_used": int(len(used_batches)),
+                "batches_used": used_batches,
+                "n_wells_used": int(weights_arr.sum()),
+            }
+        )
+
+    if len(vectors) == 0:
+        raise ValueError(
+            "No treatment vectors could be computed. Check matched controls per batch."
+        )
+
+    if skipped:
+        if requested is None:
+            warnings.warn(
+                "Skipped treatments with no matched control wells in their batches: "
+                f"{sorted(skipped)}",
+                stacklevel=2,
+            )
+        else:
+            raise ValueError(
+                "Matched control wells were not found for requested treatment(s): "
+                f"{sorted(skipped)}"
+            )
+
+    out = pd.DataFrame(np.vstack(vectors), index=index, columns=feature_names)
+    out.index.name = "treatment"
+    out.attrs["metadata"] = pd.DataFrame(metadata_rows).set_index("treatment")
+    out.attrs["params"] = {
+        "treatment_key": treatment_key,
+        "control_value": control_value,
+        "batch_key": batch_key,
+        "layer": layer,
+        "use_highly_variable": use_highly_variable,
+    }
+    return out
+
+
+def rank_treatment_correlations(
+    adata: ad.AnnData,
+    treatment: str,
+    treatment_key: str = "Treatment",
+    control_value: str = "DMSO",
+    batch_key: str = "Batch",
+    layer: str | None = "normalized",
+    treatments: str | Sequence[str] | None = None,
+    use_highly_variable: bool = False,
+    top_n: int = 10,
+    bottom_n: int = 0,
+    legend: bool = True,
+    show: bool = True,
+) -> pd.DataFrame:
+    """
+    Rank Spearman correlations between one treatment vector and all other treatment vectors.
+    """
+    if top_n < 0:
+        raise ValueError("top_n must be >= 0.")
+    if bottom_n < 0:
+        raise ValueError("bottom_n must be >= 0.")
+    if top_n == 0 and bottom_n == 0:
+        raise ValueError("At least one of top_n or bottom_n must be > 0.")
+
+    vectors = treatment_vectors(
+        adata=adata,
+        treatment_key=treatment_key,
+        control_value=control_value,
+        batch_key=batch_key,
+        layer=layer,
+        treatments=treatments,
+        use_highly_variable=use_highly_variable,
+    )
+
+    treatment = str(treatment)
+    if treatment not in vectors.index:
+        raise ValueError(
+            f"Treatment '{treatment}' is not available in computed vectors. "
+            f"Available examples: {vectors.index[:10].tolist()}"
+        )
+    if vectors.shape[0] < 2:
+        raise ValueError(
+            "Need at least 2 treatment vectors to compute pairwise correlations."
+        )
+
+    target = vectors.loc[treatment].to_numpy(dtype=np.float64)
+    rows: list[dict[str, Any]] = []
+    for other, row in vectors.iterrows():
+        if other == treatment:
+            continue
+        rho = stats.spearmanr(target, row.to_numpy(dtype=np.float64), nan_policy="omit").statistic
+        if not np.isfinite(rho):
+            rho = 0.0
+        rows.append({"treatment": str(other), "spearman_rho": float(rho)})
+
+    ranked = pd.DataFrame(rows).sort_values("spearman_rho", ascending=False, kind="stable")
+    ranked["rank"] = np.arange(1, len(ranked) + 1, dtype=np.int64)
+    ranked = ranked[["rank", "treatment", "spearman_rho"]]
+
+    display_parts: list[pd.DataFrame] = []
+    if top_n > 0:
+        top_df = ranked.head(top_n).copy()
+        top_df["section"] = f"Top {top_n}"
+        display_parts.append(top_df)
+    if bottom_n > 0:
+        bottom_df = ranked.tail(bottom_n).sort_values("spearman_rho", ascending=True).copy()
+        bottom_df["section"] = f"Bottom {bottom_n}"
+        display_parts.append(bottom_df)
+    display_df = pd.concat(display_parts, axis=0).drop_duplicates(subset=["treatment"], keep="first")
+    if display_df.empty:
+        raise ValueError("No correlation results available to plot.")
+    display_df["label"] = display_df["treatment"]
+
+    order = display_df.sort_values("spearman_rho", ascending=True)["label"].tolist()
+    fig = px.bar(
+        display_df,
+        x="spearman_rho",
+        y="label",
+        orientation="h",
+        color="spearman_rho",
+        color_continuous_scale="RdBu",
+        range_color=(-1, 1),
+        category_orders={"label": order},
+        hover_data={"rank": True, "treatment": True, "section": True, "label": False},
+        title=f"Treatment Vector Spearman Rank: {treatment}",
+        width=950,
+        height=max(450, 30 * len(display_df) + 180),
+    )
+    fig.update_layout(
+        xaxis_title="Spearman correlation",
+        yaxis_title="Treatment",
+        showlegend=legend,
+        coloraxis_showscale=legend,
+    )
+
+    if show:
+        fig.show()
+    ranked.attrs["displayed"] = display_df.loc[:, ["section", "rank", "treatment", "spearman_rho"]]
+    return ranked
+
+
+def umap_treatment_arrows(
+    adata: ad.AnnData,
+    treatment: str | Sequence[str],
+    treatment_key: str = "Treatment",
+    control_value: str = "DMSO",
+    batch_key: str = "Batch",
+    use_rep: str = "X_umap",
+    legend: bool = True,
+    width: int = 1000,
+    height: int = 800,
+    show: bool = True,
+) -> go.Figure | None:
+    """
+    Visualize control->treatment arrows on a 2D embedding (e.g., UMAP).
+    """
+    if use_rep not in adata.obsm:
+        raise KeyError(f"Embedding '{use_rep}' not found in adata.obsm.")
+    if treatment_key not in adata.obs.columns:
+        raise KeyError(f"Column '{treatment_key}' not found in adata.obs.")
+    if batch_key not in adata.obs.columns:
+        raise KeyError(f"Column '{batch_key}' not found in adata.obs.")
+
+    embedding = np.asarray(adata.obsm[use_rep])
+    if embedding.ndim != 2 or embedding.shape[1] < 2:
+        raise ValueError(f"Embedding '{use_rep}' must have shape (n_obs, >=2).")
+
+    selected = _normalize_treatments(treatment)
+    assert selected is not None
+    selected = [t for t in selected if t != str(control_value)]
+    if len(selected) == 0:
+        raise ValueError("Provide at least one non-control treatment to draw arrows.")
+
+    x_col = f"{use_rep}_1"
+    y_col = f"{use_rep}_2"
+    frame = pd.DataFrame(
+        {
+            x_col: embedding[:, 0],
+            y_col: embedding[:, 1],
+            treatment_key: adata.obs[treatment_key].astype(str).values,
+            batch_key: adata.obs[batch_key].astype(str).values,
+        },
+        index=adata.obs_names,
+    )
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scattergl(
+            x=frame[x_col],
+            y=frame[y_col],
+            mode="markers",
+            name="All wells",
+            marker={"size": 5, "color": "lightgray", "opacity": 0.3},
+            hoverinfo="skip",
+        )
+    )
+
+    ctrl_mask = frame[treatment_key] == str(control_value)
+    if np.any(ctrl_mask):
+        fig.add_trace(
+            go.Scattergl(
+                x=frame.loc[ctrl_mask, x_col],
+                y=frame.loc[ctrl_mask, y_col],
+                mode="markers",
+                name=str(control_value),
+                marker={"size": 5, "color": "#636EFA", "opacity": 0.4},
+                hovertemplate=f"{treatment_key}={control_value}<br>{x_col}=%{{x:.3f}}<br>{y_col}=%{{y:.3f}}<extra></extra>",
+            )
+        )
+
+    available_treatments = set(pd.unique(frame[treatment_key]).tolist())
+    missing_requested = [t for t in selected if t not in available_treatments]
+    if missing_requested:
+        raise ValueError(
+            f"Requested treatment(s) not found in '{treatment_key}': {missing_requested}"
+        )
+
+    palette = px.colors.qualitative.Plotly
+    for idx, trt in enumerate(selected):
+        color = palette[idx % len(palette)]
+        trt_mask = frame[treatment_key] == trt
+        fig.add_trace(
+            go.Scattergl(
+                x=frame.loc[trt_mask, x_col],
+                y=frame.loc[trt_mask, y_col],
+                mode="markers",
+                marker={"size": 6, "color": color, "opacity": 0.5},
+                name=trt,
+                legendgroup=trt,
+                showlegend=False,
+                hovertemplate=f"{treatment_key}={trt}<br>{x_col}=%{{x:.3f}}<br>{y_col}=%{{y:.3f}}<extra></extra>",
+            )
+        )
+
+        trt_batches = pd.unique(frame.loc[trt_mask, batch_key]).tolist()
+        start_points: list[np.ndarray] = []
+        end_points: list[np.ndarray] = []
+        weights: list[float] = []
+        missing_ctrl_batches: list[str] = []
+
+        for batch in trt_batches:
+            batch_trt_mask = trt_mask & (frame[batch_key] == batch)
+            batch_ctrl_mask = ctrl_mask & (frame[batch_key] == batch)
+            if not np.any(batch_ctrl_mask):
+                missing_ctrl_batches.append(str(batch))
+                continue
+
+            start_points.append(
+                frame.loc[batch_ctrl_mask, [x_col, y_col]].to_numpy(dtype=np.float64).mean(axis=0)
+            )
+            end_points.append(
+                frame.loc[batch_trt_mask, [x_col, y_col]].to_numpy(dtype=np.float64).mean(axis=0)
+            )
+            weights.append(float(np.sum(batch_trt_mask)))
+
+        if len(weights) == 0:
+            raise ValueError(
+                f"Treatment '{trt}' has no matched '{control_value}' controls in its batches."
+            )
+
+        if missing_ctrl_batches:
+            warnings.warn(
+                f"Treatment '{trt}' missing matched controls in batches {sorted(missing_ctrl_batches)}; "
+                "using only batches with controls.",
+                stacklevel=2,
+            )
+
+        w = np.asarray(weights, dtype=np.float64)
+        start = np.average(np.vstack(start_points), axis=0, weights=w)
+        end = np.average(np.vstack(end_points), axis=0, weights=w)
+
+        fig.add_trace(
+            go.Scatter(
+                x=[start[0], end[0]],
+                y=[start[1], end[1]],
+                mode="lines",
+                line={"color": color, "width": 3},
+                name=f"{trt} vector",
+                legendgroup=trt,
+                showlegend=True,
+                hovertemplate=(
+                    f"{trt}: control->{trt}<br>"
+                    f"{x_col}=%{{x:.3f}}<br>{y_col}=%{{y:.3f}}<extra></extra>"
+                ),
+            )
+        )
+        fig.add_annotation(
+            x=float(end[0]),
+            y=float(end[1]),
+            ax=float(start[0]),
+            ay=float(start[1]),
+            xref="x",
+            yref="y",
+            axref="x",
+            ayref="y",
+            showarrow=True,
+            arrowhead=3,
+            arrowsize=1.2,
+            arrowwidth=2.5,
+            arrowcolor=color,
+            text=str(trt),
+            font={"color": color},
+        )
+
+    fig.update_layout(
+        title=f"{use_rep}: control to treatment vectors",
+        xaxis_title=x_col,
+        yaxis_title=y_col,
+        width=width,
+        height=height,
+        showlegend=legend,
+    )
+
+    if show:
+        fig.show()
+        return None
+    return fig
+
+
 def visualize_drug_effect(
     adata: ad.AnnData,
     treatment: str | Sequence[str],

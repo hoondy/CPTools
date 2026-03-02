@@ -250,6 +250,12 @@ def snr_feature_selection(
     non_controls = df[df[treatment_key] != control_value]
     if non_controls.empty:
         raise ValueError("No non-control groups available for SNR calculation.")
+    n_non_control_groups = int(non_controls[treatment_key].nunique())
+    if n_non_control_groups < 2:
+        raise ValueError(
+            "SNR requires at least 2 non-control treatment groups after replicate filtering "
+            f"(min_replicates={min_replicates}). Found {n_non_control_groups}."
+        )
 
     # Calculate Signal (Variance Between Treatment Means)
     # Group by Treatment -> Calculate Mean Vector for each Drug -> Calculate Variance of those Means
@@ -354,7 +360,7 @@ def funnel(
     control_value: str = "DMSO",
     variance_threshold: float = 1e-2,
     corr_threshold: float = 0.9,
-    snr_threshold: float = 0.8,
+    snr_threshold: float | None = 0.8,
     snr_keep_top_fraction: float | None = None,
     subset: bool = False,
     verbose: bool = True,
@@ -374,7 +380,7 @@ def funnel(
     if snr_keep_top_fraction is not None:
         if not (0 < snr_keep_top_fraction <= 1):
             raise ValueError("snr_keep_top_fraction must be in (0, 1].")
-        if snr_threshold != 0.8:
+        if snr_threshold not in (None, 0.8):
             raise ValueError(
                 "Pass only one of 'snr_threshold' or deprecated 'snr_keep_top_fraction'."
             )
@@ -386,7 +392,7 @@ def funnel(
         )
         snr_threshold = 1.0 - snr_keep_top_fraction
 
-    if not (0 <= snr_threshold <= 1):
+    if snr_threshold is not None and not (0 <= snr_threshold <= 1):
         raise ValueError("snr_threshold must be in [0, 1].")
 
     target = adata if inplace else adata.copy()
@@ -433,20 +439,30 @@ def funnel(
         filtered = before - working.n_vars
         print(f"[funnel] correlation_filter: filtered {filtered}, remaining {working.n_vars}")
 
-    snr_feature_selection(
-        working,
-        treatment_key=treatment_key,
-        control_value=control_value,
-        quantile_threshold=snr_threshold,
-        subset=False,
-        inplace=True,
-    )
-    if verbose:
-        hv_in_working = int(working.var["highly_variable"].sum())
-        print(
-            "[funnel] snr_feature_selection: selected "
-            f"{hv_in_working} highly_variable features from {working.n_vars}"
+    if snr_threshold is None:
+        working.var["highly_variable"] = np.ones(working.n_vars, dtype=bool)
+        working.var["replicate_snr"] = np.nan
+        working.var["highly_variable_rank"] = np.nan
+        if verbose:
+            print(
+                "[funnel] snr_feature_selection: skipped (snr_threshold=None); "
+                f"selected {working.n_vars} highly_variable features from {working.n_vars}"
+            )
+    else:
+        snr_feature_selection(
+            working,
+            treatment_key=treatment_key,
+            control_value=control_value,
+            quantile_threshold=snr_threshold,
+            subset=False,
+            inplace=True,
         )
+        if verbose:
+            hv_in_working = int(working.var["highly_variable"].sum())
+            print(
+                "[funnel] snr_feature_selection: selected "
+                f"{hv_in_working} highly_variable features from {working.n_vars}"
+            )
 
     hv_features = set(working.var_names[working.var["highly_variable"].astype(bool)])
     prefilter_features = set(working.var_names)

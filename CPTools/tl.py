@@ -297,63 +297,78 @@ def treatment_vectors(
 
 
 def rank_treatment_correlations(
-    adata: ad.AnnData,
+    vectors: pd.DataFrame,
     treatment: str,
-    treatment_key: str = "Treatment",
-    control_value: str = "DMSO",
-    batch_key: str = "Batch",
-    layer: str | None = "normalized",
-    treatments: str | Sequence[str] | None = None,
-    use_highly_variable: bool = False,
+    method: str = "spearman",
     top_n: int = 10,
     bottom_n: int = 0,
     legend: bool = True,
     show: bool = True,
 ) -> pd.DataFrame:
     """
-    Rank Spearman correlations between one treatment vector and all other treatment vectors.
+    Rank correlations between one treatment vector and all other treatment vectors.
+
+    Parameters
+    ----------
+    vectors
+        Output table from ``cpt.tl.treatment_vectors`` (rows=treatments, cols=features).
+    treatment
+        Treatment row name to compare against all others.
+    method
+        Correlation method: ``"spearman"`` or ``"pearson"``.
     """
+    if not isinstance(vectors, pd.DataFrame):
+        raise TypeError("vectors must be a pandas DataFrame from cpt.tl.treatment_vectors.")
+    if vectors.empty:
+        raise ValueError("vectors is empty.")
     if top_n < 0:
         raise ValueError("top_n must be >= 0.")
     if bottom_n < 0:
         raise ValueError("bottom_n must be >= 0.")
     if top_n == 0 and bottom_n == 0:
         raise ValueError("At least one of top_n or bottom_n must be > 0.")
-
-    vectors = treatment_vectors(
-        adata=adata,
-        treatment_key=treatment_key,
-        control_value=control_value,
-        batch_key=batch_key,
-        layer=layer,
-        treatments=treatments,
-        use_highly_variable=use_highly_variable,
-    )
+    method = method.lower()
+    if method not in {"spearman", "pearson"}:
+        raise ValueError("method must be one of: 'spearman', 'pearson'.")
 
     treatment = str(treatment)
     if treatment not in vectors.index:
         raise ValueError(
-            f"Treatment '{treatment}' is not available in computed vectors. "
+            f"Treatment '{treatment}' is not available in vectors index. "
             f"Available examples: {vectors.index[:10].tolist()}"
         )
     if vectors.shape[0] < 2:
         raise ValueError(
             "Need at least 2 treatment vectors to compute pairwise correlations."
         )
+    numeric_vectors = vectors.apply(pd.to_numeric, errors="coerce")
+    if numeric_vectors.isna().all(axis=1).any():
+        bad_rows = numeric_vectors.index[numeric_vectors.isna().all(axis=1)].tolist()
+        raise ValueError(
+            "One or more treatment vectors are entirely non-numeric/NaN. "
+            f"Example rows: {bad_rows[:5]}"
+        )
 
-    target = vectors.loc[treatment].to_numpy(dtype=np.float64)
+    target = numeric_vectors.loc[treatment].to_numpy(dtype=np.float64)
     rows: list[dict[str, Any]] = []
-    for other, row in vectors.iterrows():
+    for other, row in numeric_vectors.iterrows():
         if other == treatment:
             continue
-        rho = stats.spearmanr(target, row.to_numpy(dtype=np.float64), nan_policy="omit").statistic
-        if not np.isfinite(rho):
-            rho = 0.0
-        rows.append({"treatment": str(other), "spearman_rho": float(rho)})
+        row_arr = row.to_numpy(dtype=np.float64)
+        valid = np.isfinite(target) & np.isfinite(row_arr)
+        if valid.sum() < 2:
+            corr = np.nan
+        elif method == "spearman":
+            corr = stats.spearmanr(target[valid], row_arr[valid], nan_policy="omit").statistic
+        else:
+            corr = stats.pearsonr(target[valid], row_arr[valid]).statistic
+        if not np.isfinite(corr):
+            corr = 0.0
+        rows.append({"treatment": str(other), "correlation": float(corr)})
 
-    ranked = pd.DataFrame(rows).sort_values("spearman_rho", ascending=False, kind="stable")
+    ranked = pd.DataFrame(rows).sort_values("correlation", ascending=False, kind="stable")
     ranked["rank"] = np.arange(1, len(ranked) + 1, dtype=np.int64)
-    ranked = ranked[["rank", "treatment", "spearman_rho"]]
+    ranked = ranked[["rank", "treatment", "correlation"]]
 
     display_parts: list[pd.DataFrame] = []
     if top_n > 0:
@@ -361,7 +376,7 @@ def rank_treatment_correlations(
         top_df["section"] = f"Top {top_n}"
         display_parts.append(top_df)
     if bottom_n > 0:
-        bottom_df = ranked.tail(bottom_n).sort_values("spearman_rho", ascending=True).copy()
+        bottom_df = ranked.tail(bottom_n).sort_values("correlation", ascending=True).copy()
         bottom_df["section"] = f"Bottom {bottom_n}"
         display_parts.append(bottom_df)
     display_df = pd.concat(display_parts, axis=0).drop_duplicates(subset=["treatment"], keep="first")
@@ -369,23 +384,24 @@ def rank_treatment_correlations(
         raise ValueError("No correlation results available to plot.")
     display_df["label"] = display_df["treatment"]
 
-    order = display_df.sort_values("spearman_rho", ascending=True)["label"].tolist()
+    corr_label = "Spearman" if method == "spearman" else "Pearson"
+    order = display_df.sort_values("correlation", ascending=True)["label"].tolist()
     fig = px.bar(
         display_df,
-        x="spearman_rho",
+        x="correlation",
         y="label",
         orientation="h",
-        color="spearman_rho",
+        color="correlation",
         color_continuous_scale="RdBu",
         range_color=(-1, 1),
         category_orders={"label": order},
         hover_data={"rank": True, "treatment": True, "section": True, "label": False},
-        title=f"Treatment Vector Spearman Rank: {treatment}",
+        title=f"Treatment Vector {corr_label} Rank: {treatment}",
         width=950,
         height=max(450, 30 * len(display_df) + 180),
     )
     fig.update_layout(
-        xaxis_title="Spearman correlation",
+        xaxis_title=f"{corr_label} correlation",
         yaxis_title="Treatment",
         showlegend=legend,
         coloraxis_showscale=legend,
@@ -393,7 +409,9 @@ def rank_treatment_correlations(
 
     if show:
         fig.show()
-    ranked.attrs["displayed"] = display_df.loc[:, ["section", "rank", "treatment", "spearman_rho"]]
+    ranked.attrs["displayed"] = display_df.loc[:, ["section", "rank", "treatment", "correlation"]]
+    ranked.attrs["method"] = method
+    ranked.attrs["query_treatment"] = treatment
     return ranked
 
 

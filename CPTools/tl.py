@@ -282,7 +282,10 @@ def treatment_vectors(
 
     out = pd.DataFrame(np.vstack(vectors), index=index, columns=feature_names)
     out.index.name = "treatment"
-    out.attrs["metadata"] = pd.DataFrame(metadata_rows).set_index("treatment")
+    metadata_df = pd.DataFrame(metadata_rows).set_index("treatment")
+    # Keep attrs values simple/serializable; storing DataFrames in attrs can
+    # break pandas repr/concat due to ambiguous DataFrame truth comparisons.
+    out.attrs["metadata"] = metadata_df.to_dict(orient="index")
     out.attrs["params"] = {
         "treatment_key": treatment_key,
         "control_value": control_value,

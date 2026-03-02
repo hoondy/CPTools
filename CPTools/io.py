@@ -104,8 +104,8 @@ def _prepare_schema(
     invalid_treatment = meta["Treatment"].astype(str).isin({"NA", "nan", "None", ""})
     meta.loc[invalid_treatment, "Treatment"] = control_value
 
-    if "DMSO" not in meta.columns and "Treatment" in meta.columns:
-        meta["DMSO"] = np.where(meta["Treatment"].astype(str) == control_value, control_value, "Drug")
+    if "Treatment" in meta.columns:
+        meta["Control"] = meta["Treatment"].astype(str) == str(control_value)
 
     dup_mask = meta["Batch_row_col"].duplicated(keep=False)
     if dup_mask.any():
@@ -200,12 +200,8 @@ def _read_single_harmony(
     adata = ad.AnnData(feature_matrix, obs=obs, var=var, dtype=np.float32)
     adata.layers["raw"] = adata.X.copy()
 
-    if "DMSO" not in adata.obs.columns and "Treatment" in adata.obs.columns:
-        adata.obs["DMSO"] = np.where(
-            adata.obs["Treatment"].astype(str) == control_value,
-            control_value,
-            "Drug",
-        )
+    if "Treatment" in adata.obs.columns:
+        adata.obs["Control"] = adata.obs["Treatment"].astype(str) == str(control_value)
     return adata
 
 

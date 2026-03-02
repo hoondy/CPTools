@@ -32,7 +32,7 @@ def scatter(
     Examples
     -------
     ``cpt.tl.scatter(adata, color="MOA", use_rep="X_umap")``
-    ``cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)``
+    ``cpt.tl.scatter(adata, color=["Batch", "Control"], use_rep="X_umap", wspace=0.4)``
     """
     if use_rep not in adata.obsm:
         raise KeyError(f"Embedding '{use_rep}' not found in adata.obsm.")
@@ -173,36 +173,60 @@ def treatment_vectors(
     control_value: str = "DMSO",
     batch_key: str = "Batch",
     layer: str | None = "normalized",
+    use_rep: str | None = None,
     treatments: str | Sequence[str] | None = None,
     use_highly_variable: bool = False,
 ) -> pd.DataFrame:
     """
-    Compute batch-matched control->treatment feature vectors.
+    Compute batch-matched control->treatment vectors.
 
     For each treatment and each batch where that treatment appears:
       vector(batch, treatment) = mean(treatment wells) - mean(control wells)
     Final treatment vector is a treatment-well-count weighted mean across batches.
+
+    By default vectors are computed from a matrix layer (``layer``). If
+    ``use_rep`` is provided (e.g., ``"X_pca"``), vectors are computed from
+    ``adata.obsm[use_rep]`` instead.
     """
     if treatment_key not in adata.obs.columns:
         raise KeyError(f"Column '{treatment_key}' not found in adata.obs.")
     if batch_key not in adata.obs.columns:
         raise KeyError(f"Column '{batch_key}' not found in adata.obs.")
 
-    if use_highly_variable:
-        if "highly_variable" not in adata.var.columns:
-            raise KeyError("Column 'highly_variable' not found in adata.var.")
-        hv_mask = adata.var["highly_variable"].fillna(False).to_numpy(dtype=bool)
-        if not np.any(hv_mask):
-            raise ValueError("No features marked as highly_variable.")
-        feature_names = adata.var_names[hv_mask].tolist()
+    if use_rep is not None:
+        if use_rep not in adata.obsm:
+            raise KeyError(f"Embedding '{use_rep}' not found in adata.obsm.")
+        rep = np.asarray(adata.obsm[use_rep])
+        if rep.ndim != 2:
+            raise ValueError(f"Embedding '{use_rep}' must be 2D (n_obs, n_components).")
+        if rep.shape[0] != adata.n_obs:
+            raise ValueError(
+                f"Embedding '{use_rep}' has {rep.shape[0]} rows but adata has {adata.n_obs} observations."
+            )
+        if use_highly_variable:
+            warnings.warn(
+                "'use_highly_variable' is ignored when 'use_rep' is provided.",
+                stacklevel=2,
+            )
+        feature_names = [f"{use_rep}_{i + 1}" for i in range(rep.shape[1])]
+        frame = pd.DataFrame(rep, columns=feature_names, index=adata.obs_names)
+        source_kind = f"obsm:{use_rep}"
     else:
-        feature_names = adata.var_names.tolist()
+        if use_highly_variable:
+            if "highly_variable" not in adata.var.columns:
+                raise KeyError("Column 'highly_variable' not found in adata.var.")
+            hv_mask = adata.var["highly_variable"].fillna(False).to_numpy(dtype=bool)
+            if not np.any(hv_mask):
+                raise ValueError("No features marked as highly_variable.")
+            feature_names = adata.var_names[hv_mask].tolist()
+        else:
+            feature_names = adata.var_names.tolist()
+        X = _get_data_matrix(adata, layer=layer)
+        frame = pd.DataFrame(X, columns=adata.var_names, index=adata.obs_names)
+        frame = frame.loc[:, feature_names].copy()
+        source_kind = f"layer:{layer if layer is not None else 'X'}"
 
     requested = _normalize_treatments(treatments)
-
-    X = _get_data_matrix(adata, layer=layer)
-    frame = pd.DataFrame(X, columns=adata.var_names, index=adata.obs_names)
-    frame = frame.loc[:, feature_names].copy()
     frame[treatment_key] = adata.obs[treatment_key].astype(str).values
     frame[batch_key] = adata.obs[batch_key].astype(str).values
 
@@ -291,6 +315,8 @@ def treatment_vectors(
         "control_value": control_value,
         "batch_key": batch_key,
         "layer": layer,
+        "use_rep": use_rep,
+        "source": source_kind,
         "use_highly_variable": use_highly_variable,
     }
     return out

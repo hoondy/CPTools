@@ -1,10 +1,22 @@
 # CPTools
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Scanpy](https://img.shields.io/badge/dependency-Scanpy-brightgreen.svg)](https://scanpy.readthedocs.io/)
+
 Cell Painting utilities for:
 - Harmony + master schema ingestion into `AnnData`
 - Control-based robust normalization
 - Feature filtering and reproducibility-aware selection
-- Plotly-based visualization helpers
+- ZCA whitening for improved geometric comparisons
+- Plotly-based visualization helpers (scatter, volcano, boxplots, arrows)
+
+## Features
+
+- **Integrated Pipeline**: The `funnel` function combines normalization and multiple filtering steps into one robust workflow.
+- **Batch-Aware Statistics**: Normalization and treatment effects are calculated relative to matched controls in each batch.
+- **AnnData Compatibility**: Built directly on top of `AnnData` for seamless integration with `Scanpy`.
+- **High-Quality Visualization**: Interactive Plotly-based plots for exploratory analysis.
 
 ## Core Philosophy
 
@@ -132,6 +144,10 @@ sc.pp.neighbors(adata)
 sc.tl.umap(adata)
 sc.tl.leiden(adata)
 ```
+
+## API Documentation
+
+For a full list of available functions and their parameters, see the [API Reference](docs/api.md).
 
 ## Visualization
 

@@ -1,18 +1,10 @@
-# CPTools Tutorial: End-to-End Cell Painting Analysis with the Package API
+# CPTools Tutorial: End-to-End Cell Painting Analysis
 
 This tutorial demonstrates a clean, package-first workflow for Cell Painting analysis using **CPTools** and **Scanpy**.
 
-It covers:
-1. Loading Harmony-style results into `AnnData`
-2. Robust control-based normalization
-3. Feature selection (full funnel)
-4. ZCA whitening
-5. PCA / neighbors / UMAP
-6. Plotly visualization (`scatter` + `visualize_drug_effect`)
-
 ---
 
-## 1) Setup
+## 1. Setup
 
 ```python
 import CPTools as cpt
@@ -21,7 +13,7 @@ import scanpy as sc
 
 ---
 
-## 2) Read Data
+## 2. Read Data
 
 Use CPTools I/O to load feature matrix + metadata directly into an `AnnData` object:
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Sequence
 import warnings
 
@@ -14,6 +15,37 @@ from scipy import stats
 from ._utils import to_dense_matrix
 
 
+def _save_plotly_figure(
+    fig: go.Figure,
+    save: str | Path | None,
+    *,
+    scale: float = 2.0,
+) -> None:
+    if save is None:
+        return
+    out = Path(save)
+    ext = out.suffix.lower()
+    if ext not in {".png", ".pdf"}:
+        raise ValueError("save path must end with .png or .pdf")
+    fig.write_image(str(out), scale=scale)
+
+
+def _split_save_paths(
+    save: str | Path | None,
+    first_suffix: str,
+    second_suffix: str,
+) -> tuple[Path | None, Path | None]:
+    if save is None:
+        return None, None
+    base = Path(save)
+    ext = base.suffix.lower()
+    if ext not in {".png", ".pdf"}:
+        raise ValueError("save path must end with .png or .pdf")
+    first = base.with_name(f"{base.stem}_{first_suffix}{base.suffix}")
+    second = base.with_name(f"{base.stem}_{second_suffix}{base.suffix}")
+    return first, second
+
+
 def scatter(
     adata: ad.AnnData,
     color: str | Sequence[str] | None = None,
@@ -24,6 +56,7 @@ def scatter(
     legend: bool = True,
     title: str | None = None,
     show: bool = True,
+    save: str | Path | None = None,
     **kwargs: Any,
 ) -> go.Figure | None:
     """
@@ -121,6 +154,7 @@ def scatter(
         )
 
     fig.update_layout(showlegend=legend)
+    _save_plotly_figure(fig, save)
 
     if show:
         fig.show()
@@ -330,6 +364,7 @@ def rank_treatment_correlations(
     bottom_n: int = 0,
     legend: bool = True,
     show: bool = True,
+    save: str | Path | None = None,
 ) -> pd.DataFrame:
     """
     Rank correlations between one treatment vector and all other treatment vectors.
@@ -432,6 +467,7 @@ def rank_treatment_correlations(
         showlegend=legend,
         coloraxis_showscale=legend,
     )
+    _save_plotly_figure(fig, save)
 
     if show:
         fig.show()
@@ -452,6 +488,7 @@ def umap_treatment_arrows(
     width: int = 1000,
     height: int = 800,
     show: bool = True,
+    save: str | Path | None = None,
 ) -> go.Figure | None:
     """
     Visualize control->treatment arrows on a 2D embedding (e.g., UMAP).
@@ -600,8 +637,21 @@ def umap_treatment_arrows(
             arrowsize=1.2,
             arrowwidth=2.5,
             arrowcolor=color,
-            text=str(trt),
-            font={"color": color},
+            text="",
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[float(end[0])],
+                y=[float(end[1])],
+                mode="text",
+                text=[str(trt)],
+                textposition="middle center",
+                textfont={"color": color},
+                name=f"{trt} label",
+                legendgroup=trt,
+                showlegend=False,
+                hoverinfo="skip",
+            )
         )
 
     fig.update_layout(
@@ -612,6 +662,7 @@ def umap_treatment_arrows(
         height=height,
         showlegend=legend,
     )
+    _save_plotly_figure(fig, save)
 
     if show:
         fig.show()
@@ -631,6 +682,7 @@ def visualize_drug_effect(
     effect_threshold: float = 0.0,
     legend: bool = True,
     show: bool = True,
+    save: str | Path | None = None,
 ) -> pd.DataFrame:
     """
     Generate volcano + boxplots for selected treatment(s) vs matched controls
@@ -817,6 +869,9 @@ def visualize_drug_effect(
         legend_title_text="Condition",
         showlegend=legend,
     )
+    volcano_path, boxplot_path = _split_save_paths(save, "volcano", "boxplot")
+    _save_plotly_figure(volcano, volcano_path)
+    _save_plotly_figure(boxplot, boxplot_path)
 
     if show:
         volcano.show()
@@ -850,6 +905,7 @@ def visualize_drug_effect_rescue(
     effect_threshold: float = 0.0,
     legend: bool = True,
     show: bool = True,
+    save: str | Path | None = None,
 ) -> pd.DataFrame:
     """
     Generate treatment-vs-control volcano plot and boxplots including rescue groups.
@@ -1090,6 +1146,9 @@ def visualize_drug_effect_rescue(
         legend_title_text="Condition",
         showlegend=legend,
     )
+    volcano_path, boxplot_path = _split_save_paths(save, "volcano", "boxplot")
+    _save_plotly_figure(volcano, volcano_path)
+    _save_plotly_figure(boxplot, boxplot_path)
 
     if show:
         volcano.show()

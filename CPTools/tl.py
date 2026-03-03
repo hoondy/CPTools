@@ -25,9 +25,31 @@ def _save_plotly_figure(
         return
     out = Path(save)
     ext = out.suffix.lower()
+    if ext == ".html":
+        fig.write_html(str(out))
+        return
     if ext not in {".png", ".pdf"}:
-        raise ValueError("save path must end with .png or .pdf")
-    fig.write_image(str(out), scale=scale)
+        raise ValueError("save path must end with .png, .pdf, or .html")
+
+    try:
+        fig.write_image(str(out), scale=scale)
+    except Exception as exc:
+        msg = str(exc)
+        chrome_missing = (
+            "Kaleido requires Google Chrome" in msg
+            or "ChromeNotFoundError" in msg
+            or "plotly_get_chrome" in msg
+        )
+        if not chrome_missing:
+            raise
+
+        html_out = out.with_suffix(".html")
+        fig.write_html(str(html_out))
+        warnings.warn(
+            "Static export failed because Chrome is not available for Kaleido. "
+            f"Saved interactive HTML instead: {html_out}",
+            stacklevel=2,
+        )
 
 
 def _split_save_paths(
@@ -39,8 +61,8 @@ def _split_save_paths(
         return None, None
     base = Path(save)
     ext = base.suffix.lower()
-    if ext not in {".png", ".pdf"}:
-        raise ValueError("save path must end with .png or .pdf")
+    if ext not in {".png", ".pdf", ".html"}:
+        raise ValueError("save path must end with .png, .pdf, or .html")
     first = base.with_name(f"{base.stem}_{first_suffix}{base.suffix}")
     second = base.with_name(f"{base.stem}_{second_suffix}{base.suffix}")
     return first, second

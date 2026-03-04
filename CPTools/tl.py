@@ -384,6 +384,8 @@ def rank_treatment_correlations(
     method: str = "spearman",
     top_n: int = 10,
     bottom_n: int = 0,
+    width: int = 950,
+    height: int | None = None,
     legend: bool = True,
     show: bool = True,
     save: str | Path | None = None,
@@ -410,6 +412,10 @@ def rank_treatment_correlations(
         raise ValueError("bottom_n must be >= 0.")
     if top_n == 0 and bottom_n == 0:
         raise ValueError("At least one of top_n or bottom_n must be > 0.")
+    if width <= 0:
+        raise ValueError("width must be > 0.")
+    if height is not None and height <= 0:
+        raise ValueError("height must be > 0 when provided.")
     method = method.lower()
     if method not in {"spearman", "pearson"}:
         raise ValueError("method must be one of: 'spearman', 'pearson'.")
@@ -469,6 +475,7 @@ def rank_treatment_correlations(
 
     corr_label = "Spearman" if method == "spearman" else "Pearson"
     order = display_df.sort_values("correlation", ascending=True)["label"].tolist()
+    final_height = height if height is not None else max(450, 30 * len(display_df) + 180)
     fig = px.bar(
         display_df,
         x="correlation",
@@ -480,8 +487,8 @@ def rank_treatment_correlations(
         category_orders={"label": order},
         hover_data={"rank": True, "treatment": True, "section": True, "label": False},
         title=f"Treatment Vector {corr_label} Rank: {treatment}",
-        width=950,
-        height=max(450, 30 * len(display_df) + 180),
+        width=width,
+        height=final_height,
     )
     fig.update_layout(
         xaxis_title=f"{corr_label} correlation",

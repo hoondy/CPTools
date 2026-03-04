@@ -636,7 +636,7 @@ def umap_treatment_arrows(
                 y=[start[1], end[1]],
                 mode="lines",
                 line={"color": color, "width": 3},
-                name=f"{trt} vector",
+                name=str(trt),
                 legendgroup=trt,
                 showlegend=True,
                 hovertemplate=(
@@ -927,6 +927,10 @@ def visualize_drug_effect_rescue(
     effect_threshold: float = 0.0,
     legend: bool = True,
     show: bool = True,
+    volcano_width: int = 950,
+    volcano_height: int = 650,
+    boxplot_width: int = 1200,
+    boxplot_height: int = 700,
     save: str | Path | None = None,
 ) -> pd.DataFrame:
     """
@@ -945,6 +949,10 @@ def visualize_drug_effect_rescue(
         raise ValueError("qvalue_threshold must be in (0, 1].")
     if effect_threshold < 0:
         raise ValueError("effect_threshold must be >= 0.")
+    if volcano_width <= 0 or volcano_height <= 0:
+        raise ValueError("volcano_width and volcano_height must be > 0.")
+    if boxplot_width <= 0 or boxplot_height <= 0:
+        raise ValueError("boxplot_width and boxplot_height must be > 0.")
 
     treatments = _normalize_treatments(treatment)
     assert treatments is not None
@@ -1085,8 +1093,8 @@ def visualize_drug_effect_rescue(
         title=f"Drug Effect Volcano: {treatment_label} vs {control_value}",
         xaxis_title=f"Phenotypic shift ({layer or 'X'} units)",
         yaxis_title="-log10(q-value)",
-        width=950,
-        height=650,
+        width=volcano_width,
+        height=volcano_height,
         showlegend=legend,
     )
 
@@ -1160,8 +1168,8 @@ def visualize_drug_effect_rescue(
     boxplot.update_layout(
         title=f"Top {top_n} Features: {treatment_label} vs {control_value} with rescue ({rescue_label})",
         boxmode="group",
-        width=1200,
-        height=700,
+        width=boxplot_width,
+        height=boxplot_height,
         xaxis_tickangle=45,
         xaxis=dict(categoryorder="array", categoryarray=top_hits.index.tolist(), title="Feature"),
         yaxis_title=f"Feature intensity ({layer or 'X'})",

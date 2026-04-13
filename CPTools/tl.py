@@ -563,6 +563,7 @@ def umap_treatment_arrows(
         )
     )
 
+    control_color = "#7F7F7F"
     ctrl_mask = frame[treatment_key] == str(control_value)
     if np.any(ctrl_mask):
         fig.add_trace(
@@ -571,7 +572,7 @@ def umap_treatment_arrows(
                 y=frame.loc[ctrl_mask, y_col],
                 mode="markers",
                 name=str(control_value),
-                marker={"size": 5, "color": "#636EFA", "opacity": 0.4},
+                marker={"size": 5, "color": control_color, "opacity": 0.45},
                 hovertemplate=f"{treatment_key}={control_value}<br>{x_col}=%{{x:.3f}}<br>{y_col}=%{{y:.3f}}<extra></extra>",
             )
         )
@@ -583,7 +584,9 @@ def umap_treatment_arrows(
             f"Requested treatment(s) not found in '{treatment_key}': {missing_requested}"
         )
 
-    palette = px.colors.qualitative.Plotly
+    palette = [c for c in px.colors.qualitative.Plotly if c != control_color]
+    if len(palette) == 0:
+        palette = px.colors.qualitative.D3
     for idx, trt in enumerate(selected):
         color = palette[idx % len(palette)]
         trt_mask = frame[treatment_key] == trt

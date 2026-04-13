@@ -128,7 +128,7 @@ Individual filters follow the same rule:
 - default is annotation-only (`subset=False`)
 - pass `subset=True` to actually remove features
 
-## Downstream DR / Clustering
+## Downstream Dimensionality Reduction / Clustering
 
 `funnel`/`snr_feature_selection` keep all features by default and write:
 - `adata.var["highly_variable"]`

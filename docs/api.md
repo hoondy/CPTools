@@ -211,17 +211,20 @@ Apply control-based regularized ZCA whitening.
 ---
 
 ### `funnel`
-`cpt.pp.funnel(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', variance_threshold=0.01, corr_threshold=0.9, snr_threshold=0.8, snr_keep_top_fraction=None, subset=False, verbose=True, inplace=True)`
+`cpt.pp.funnel(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', source_layer=None, variance_threshold=0.01, corr_threshold=0.9, snr_threshold=0.8, snr_keep_top_fraction=None, subset=False, verbose=True, inplace=True)`
 
 A comprehensive feature filtering and selection pipeline.
 
+By default, filtering is calculated from the current `adata.X`. Pass
+`source_layer="normalized"` or another layer name to calculate filters from a
+specific layer without replacing `adata.X`.
+
 **Pipeline Steps**
-1. `robust_zscore_norm`
-2. `blocklist_filter` (subsetting in temporary copy)
-3. `nan_filter` (subsetting in temporary copy)
-4. `variance_filter` (subsetting in temporary copy)
-5. `correlation_filter` (subsetting in temporary copy)
-6. `snr_feature_selection`
+1. `blocklist_filter` (subsetting in temporary copy)
+2. `nan_filter` (subsetting in temporary copy)
+3. `variance_filter` (subsetting in temporary copy; skipped if `variance_threshold=None`)
+4. `correlation_filter` (subsetting in temporary copy; skipped if `corr_threshold=None`)
+5. `snr_feature_selection` (skipped if `snr_threshold=None`)
 
 **Parameters**
 
@@ -231,9 +234,10 @@ A comprehensive feature filtering and selection pipeline.
 | `batch_key` | `str` | `'Batch'` | Key for batches. |
 | `treatment_key` | `str` | `'Treatment'` | Key for treatments. |
 | `control_value` | `str` | `'DMSO'` | Key for controls. |
-| `variance_threshold` | `float` | `0.01` | Interpreted as a variance quantile to drop. |
-| `corr_threshold` | `float` | `0.9` | Correlation threshold for `correlation_filter`. |
-| `snr_threshold` | `float \| None` | `0.8` | SNR quantile threshold (fraction to exclude from bottom). |
+| `source_layer` | `str \| None` | `None` | Matrix source for filtering; `None` uses current `adata.X`. |
+| `variance_threshold` | `float \| None` | `0.01` | Interpreted as a variance quantile to drop; `None` skips `variance_filter`. |
+| `corr_threshold` | `float \| None` | `0.9` | Correlation threshold for `correlation_filter`; `None` skips `correlation_filter`. |
+| `snr_threshold` | `float \| None` | `0.8` | SNR quantile threshold (fraction to exclude from bottom); `None` skips `snr_feature_selection`. |
 | `snr_keep_top_fraction` | `float \| None` | `None` | **Deprecated** alias for `1 - snr_threshold`. |
 | `subset` | `bool` | `False` | If `True`, physically subsets to highly variable features. |
 | `verbose` | `bool` | `True` | Whether to print progress and counts. |

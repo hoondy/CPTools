@@ -358,8 +358,9 @@ def funnel(
     batch_key: str = "Batch",
     treatment_key: str = "Treatment",
     control_value: str = "DMSO",
-    variance_threshold: float = 1e-2,
-    corr_threshold: float = 0.9,
+    source_layer: str | None = None,
+    variance_threshold: float | None = 1e-2,
+    corr_threshold: float | None = 0.9,
     snr_threshold: float | None = 0.8,
     snr_keep_top_fraction: float | None = None,
     subset: bool = False,
@@ -369,13 +370,18 @@ def funnel(
     """
     A series of filters and feature selections.
 
+    Filtering is calculated from ``adata.X`` by default. Pass ``source_layer``
+    to calculate filters from a specific layer without replacing ``adata.X``.
+
     By default, this function **does not remove features**. It marks selected
     features in ``adata.var["highly_variable"]``.
 
     Set ``subset=True`` to physically subset features to the final selected set.
     """
-    if not (0 <= variance_threshold <= 1):
+    if variance_threshold is not None and not (0 <= variance_threshold <= 1):
         raise ValueError("variance_threshold must be in [0, 1] and is interpreted as a quantile.")
+    if corr_threshold is not None and not (-1 <= corr_threshold <= 1):
+        raise ValueError("corr_threshold must be in [-1, 1].")
 
     if snr_keep_top_fraction is not None:
         if not (0 < snr_keep_top_fraction <= 1):
@@ -396,22 +402,17 @@ def funnel(
         raise ValueError("snr_threshold must be in [0, 1].")
 
     target = adata if inplace else adata.copy()
-    robust_zscore_norm(
-        target,
-        batch_key=batch_key,
-        treatment_key=treatment_key,
-        control_value=control_value,
-        source_layer="raw" if "raw" in target.layers else None,
-        inplace=True,
-    )
+    source_matrix = _matrix_from_layer(target, source_layer=source_layer)
 
     # Run feature-reduction steps on a working copy so default behavior can
     # annotate HV features without mutating target feature space.
     working = target.copy()
+    working.X = source_matrix.astype(np.float32, copy=True)
 
     n0 = working.n_vars
     if verbose:
-        print(f"[funnel] starting with {n0} features")
+        source_label = source_layer if source_layer is not None else "X"
+        print(f"[funnel] starting with {n0} features from {source_label}")
 
     before = working.n_vars
     blocklist_filter(working, subset=True, inplace=True)
@@ -425,19 +426,34 @@ def funnel(
         filtered = before - working.n_vars
         print(f"[funnel] nan_filter: filtered {filtered}, remaining {working.n_vars}")
 
-    before = working.n_vars
-    var_values = np.nanvar(_matrix_from_layer(working, source_layer=None), axis=0)
-    variance_cutoff = float(np.nanquantile(var_values, variance_threshold))
-    variance_filter(working, threshold=variance_cutoff, subset=True, inplace=True)
-    if verbose:
-        filtered = before - working.n_vars
-        print(f"[funnel] variance_filter: filtered {filtered}, remaining {working.n_vars}")
+    variance_cutoff = None
+    if variance_threshold is None:
+        if verbose:
+            print(
+                "[funnel] variance_filter: skipped (variance_threshold=None); "
+                f"remaining {working.n_vars}"
+            )
+    else:
+        before = working.n_vars
+        var_values = np.nanvar(_matrix_from_layer(working, source_layer=None), axis=0)
+        variance_cutoff = float(np.nanquantile(var_values, variance_threshold))
+        variance_filter(working, threshold=variance_cutoff, subset=True, inplace=True)
+        if verbose:
+            filtered = before - working.n_vars
+            print(f"[funnel] variance_filter: filtered {filtered}, remaining {working.n_vars}")
 
-    before = working.n_vars
-    correlation_filter(working, threshold=corr_threshold, subset=True, inplace=True)
-    if verbose:
-        filtered = before - working.n_vars
-        print(f"[funnel] correlation_filter: filtered {filtered}, remaining {working.n_vars}")
+    if corr_threshold is None:
+        if verbose:
+            print(
+                "[funnel] correlation_filter: skipped (corr_threshold=None); "
+                f"remaining {working.n_vars}"
+            )
+    else:
+        before = working.n_vars
+        correlation_filter(working, threshold=corr_threshold, subset=True, inplace=True)
+        if verbose:
+            filtered = before - working.n_vars
+            print(f"[funnel] correlation_filter: filtered {filtered}, remaining {working.n_vars}")
 
     if snr_threshold is None:
         working.var["highly_variable"] = np.ones(working.n_vars, dtype=bool)
@@ -493,6 +509,7 @@ def funnel(
         "batch_key": batch_key,
         "treatment_key": treatment_key,
         "control_value": control_value,
+        "source_layer": source_layer,
         "variance_threshold": variance_threshold,
         "variance_cutoff": variance_cutoff,
         "corr_threshold": corr_threshold,

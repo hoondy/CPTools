@@ -104,10 +104,27 @@ cpt.pp.funnel(
     batch_key="Batch",
     treatment_key="Treatment",
     control_value="DMSO",
+    source_layer=None,  # use current adata.X; use "normalized" to read that layer
     variance_threshold=0.01,  # drop bottom 1% by variance
     corr_threshold=0.9,
     snr_threshold=0.8,  # exclude bottom 80% by SNR
     verbose=True,  # prints per-step filtered/selected feature counts
+)
+```
+
+To use the funnel mainly as a NaN-feature cleanup path on the current matrix, skip the optional variance, correlation, and SNR steps:
+
+```python
+cpt.pp.funnel(
+    adata,
+    batch_key="Batch",
+    treatment_key="Treatment",
+    control_value="DMSO",
+    source_layer=None,  # use current adata.X
+    variance_threshold=None,
+    corr_threshold=None,
+    snr_threshold=None,
+    subset=True,
 )
 ```
 

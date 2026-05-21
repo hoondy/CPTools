@@ -67,6 +67,7 @@ adata = cpt.pp.funnel(
     batch_key="Batch",
     treatment_key="Treatment",
     control_value="DMSO",
+    source_layer=None,      # use current adata.X; use "normalized" to read that layer
     variance_threshold=0.01,  # drop bottom 1% by variance
     snr_threshold=0.8,        # exclude bottom 80% by SNR
     verbose=True,  # prints per-step filtered/selected feature counts
@@ -80,6 +81,22 @@ it marks them via:
 - `adata.var["replicate_snr"]`
 
 Use `subset=True` only if you explicitly want to remove non-selected features.
+
+To keep only NaN-feature cleanup on the current matrix, skip the optional filters:
+
+```python
+adata = cpt.pp.funnel(
+    adata,
+    batch_key="Batch",
+    treatment_key="Treatment",
+    control_value="DMSO",
+    source_layer=None,
+    variance_threshold=None,
+    corr_threshold=None,
+    snr_threshold=None,
+    subset=True,
+)
+```
 
 The same behavior applies to individual filters:
 - `blocklist_filter`, `nan_filter`, `variance_filter`, `correlation_filter`

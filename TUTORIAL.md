@@ -68,6 +68,7 @@ adata = cpt.pp.funnel(
     treatment_key="Treatment",
     control_value="DMSO",
     source_layer=None,      # use current adata.X; use "normalized" to read that layer
+    obs_nan_threshold=0.2,  # drop observations with >20% non-finite features
     variance_threshold=0.01,  # drop bottom 1% by variance
     snr_threshold=0.8,        # exclude bottom 80% by SNR
     verbose=True,  # prints per-step filtered/selected feature counts
@@ -91,6 +92,7 @@ adata = cpt.pp.funnel(
     treatment_key="Treatment",
     control_value="DMSO",
     source_layer=None,
+    obs_nan_threshold=0.2,
     variance_threshold=None,
     corr_threshold=None,
     snr_threshold=None,
@@ -99,9 +101,9 @@ adata = cpt.pp.funnel(
 ```
 
 The same behavior applies to individual filters:
-- `blocklist_filter`, `nan_filter`, `variance_filter`, `correlation_filter`
-- default: annotate pass/fail masks in `adata.var`
-- `subset=True`: physically subset features
+- `blocklist_filter`, `nan_obs_filter`, `nan_filter`, `variance_filter`, `correlation_filter`
+- default: annotate pass/fail masks in `adata.obs` or `adata.var`
+- `subset=True`: physically subset observations or features
 
 ### Optional: run replicate SNR selection directly
 

@@ -79,16 +79,20 @@ Robust Z-score normalization per batch using control wells.
 ---
 
 ### `blocklist_filter`
-`cpt.pp.blocklist_filter(adata, keywords=DEFAULT_BLOCKLIST_KEYWORDS, subset=False, inplace=True)`
+`cpt.pp.blocklist_filter(adata, keywords=None, blocklist_path=None, blocklist_key='default', subset=False, inplace=True)`
 
-Mark or drop features containing known technical artifact keywords.
+Mark or drop known-noisy CellProfiler features. By default, CPTools uses the
+packaged `default_blocklists.yaml` curated blocklist and exact feature-name
+matching. Pass `keywords` only for backward-compatible substring filtering.
 
 **Parameters**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `adata` | `anndata.AnnData` | | The AnnData object to filter. |
-| `keywords` | `Sequence[str]` | `DEFAULT_BLOCKLIST_KEYWORDS` | List of substrings to filter out. Default includes: "Manders", "RWC", "Location", "Granularity", "Execution", "Euler". |
+| `keywords` | `Sequence[str] \| None` | `None` | Optional backward-compatible substring filters. If provided, this overrides YAML blocklist matching. |
+| `blocklist_path` | `str \| Path \| None` | `None` | Optional YAML file. If `None`, uses CPTools' packaged `default_blocklists.yaml`. |
+| `blocklist_key` | `str` | `'default'` | Top-level YAML key containing the feature-name blocklist. |
 | `subset` | `bool` | `False` | If `True`, physically removes the features. Otherwise, only marks them in `adata.var["pass_blocklist"]`. |
 | `inplace` | `bool` | `True` | Whether to update the AnnData object in place. |
 
@@ -109,6 +113,26 @@ Mark or drop features with non-finite values (NaN or Inf) in any well.
 | `adata` | `anndata.AnnData` | | The AnnData object to filter. |
 | `source_layer` | `str \| None` | `None` | Layer to check for NaNs. If `None`, uses `adata.X`. |
 | `subset` | `bool` | `False` | If `True`, physically removes the features. Otherwise, only marks them in `adata.var["pass_non_nan"]`. |
+| `inplace` | `bool` | `True` | Whether to update the AnnData object in place. |
+
+**Returns**
+- `anndata.AnnData`: The filtered AnnData object.
+
+---
+
+### `nan_obs_filter`
+`cpt.pp.nan_obs_filter(adata, max_nan_fraction=0.2, source_layer=None, subset=False, inplace=True)`
+
+Mark or drop observations with too many non-finite feature values.
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | `anndata.AnnData` | | The AnnData object to filter. |
+| `max_nan_fraction` | `float` | `0.2` | Maximum allowed fraction of non-finite feature values per observation. |
+| `source_layer` | `str \| None` | `None` | Layer to check for NaNs. If `None`, uses `adata.X`. |
+| `subset` | `bool` | `False` | If `True`, physically removes observations. Otherwise, only marks them in `adata.obs["pass_non_nan"]`. |
 | `inplace` | `bool` | `True` | Whether to update the AnnData object in place. |
 
 **Returns**
@@ -211,7 +235,7 @@ Apply control-based regularized ZCA whitening.
 ---
 
 ### `funnel`
-`cpt.pp.funnel(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', source_layer=None, variance_threshold=0.01, corr_threshold=0.9, snr_threshold=0.8, snr_keep_top_fraction=None, subset=False, verbose=True, inplace=True)`
+`cpt.pp.funnel(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', source_layer=None, obs_nan_threshold=0.2, variance_threshold=0.01, corr_threshold=0.9, snr_threshold=0.8, snr_keep_top_fraction=None, subset=False, verbose=True, inplace=True)`
 
 A comprehensive feature filtering and selection pipeline.
 
@@ -221,10 +245,11 @@ specific layer without replacing `adata.X`.
 
 **Pipeline Steps**
 1. `blocklist_filter` (subsetting in temporary copy)
-2. `nan_filter` (subsetting in temporary copy)
-3. `variance_filter` (subsetting in temporary copy; skipped if `variance_threshold=None`)
-4. `correlation_filter` (subsetting in temporary copy; skipped if `corr_threshold=None`)
-5. `snr_feature_selection` (skipped if `snr_threshold=None`)
+2. `nan_obs_filter` (subsetting bad observations in temporary copy; skipped if `obs_nan_threshold=None`)
+3. `nan_filter` (subsetting features in temporary copy)
+4. `variance_filter` (subsetting in temporary copy; skipped if `variance_threshold=None`)
+5. `correlation_filter` (subsetting in temporary copy; skipped if `corr_threshold=None`)
+6. `snr_feature_selection` (skipped if `snr_threshold=None`)
 
 **Parameters**
 
@@ -235,6 +260,7 @@ specific layer without replacing `adata.X`.
 | `treatment_key` | `str` | `'Treatment'` | Key for treatments. |
 | `control_value` | `str` | `'DMSO'` | Key for controls. |
 | `source_layer` | `str \| None` | `None` | Matrix source for filtering; `None` uses current `adata.X`. |
+| `obs_nan_threshold` | `float \| None` | `0.2` | Drop observations with non-finite fraction above this threshold before feature-level NaN filtering; `None` skips observation filtering. |
 | `variance_threshold` | `float \| None` | `0.01` | Interpreted as a variance quantile to drop; `None` skips `variance_filter`. |
 | `corr_threshold` | `float \| None` | `0.9` | Correlation threshold for `correlation_filter`; `None` skips `correlation_filter`. |
 | `snr_threshold` | `float \| None` | `0.8` | SNR quantile threshold (fraction to exclude from bottom); `None` skips `snr_feature_selection`. |

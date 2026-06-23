@@ -32,30 +32,35 @@ CPTools uses a strict funnel to convert raw measurements into stable, reproducib
 
 2. `blocklist_filter`: Remove known technical artifact features
 - Problem: some extracted columns are technical/positional rather than biological.
-- Method: drop/flag known artifact patterns (for example location/execution-style features).
+- Method: drop/flag exact matches from the packaged `default_blocklists.yaml` curated CellProfiler blocklist.
 - Why it matters: prevents models from learning acquisition artifacts.
 
-3. `nan_filter`: Remove broken/unstable features
+3. `nan_obs_filter`: Remove bad wells/cells before feature filtering
+- Problem: a small number of failed observations can contain many NaNs and make otherwise useful features look broken.
+- Method: in `funnel`, drop/flag observations whose non-finite fraction exceeds `obs_nan_threshold`.
+- Why it matters: protects feature-level filtering from being driven by a few failed rows.
+
+4. `nan_filter`: Remove broken/unstable features
 - Problem: NaN features arise from segmentation failures or invalid transforms.
 - Method: drop/flag features containing non-finite values.
 - Why it matters: avoids failures and instability in PCA/UMAP/whitening.
 
-4. `variance_filter`: Remove low-information features
+5. `variance_filter`: Remove low-information features
 - Problem: features with very low variance carry little or no perturbation signal.
 - Method: in `funnel`, `variance_threshold` is treated as a variance quantile (for example `0.01` removes bottom 1% variance features).
 - Why it matters: improves efficiency and denoises feature space.
 
-5. `correlation_filter`: De-redundancy
+6. `correlation_filter`: De-redundancy
 - Problem: many morphology features are near-duplicates.
 - Method: keep high-variance representatives from correlated feature clusters.
 - Why it matters: avoids overweighting one biological axis (for example "size") in distance-based methods.
 
-6. `snr_feature_selection`: Reproducibility-based selection
+7. `snr_feature_selection`: Reproducibility-based selection
 - Problem: a feature can vary strongly but still be noisy if replicates disagree.
 - Method: signal = variance across treatment means (excluding controls); noise = within-treatment replicate variance (including controls); rank by SNR.
 - Why it matters: prioritizes features that are both perturbation-responsive and replicate-consistent.
 
-7. `zca_whiten`: Control-defined whitening
+8. `zca_whiten`: Control-defined whitening
 - Problem: multivariate covariance structure can hide subtle but meaningful phenotypes.
 - Method: use matched controls to estimate covariance and whiten the feature space.
 - Why it matters: improves geometric comparability so distances better reflect biological dissimilarity.
@@ -105,6 +110,7 @@ cpt.pp.funnel(
     treatment_key="Treatment",
     control_value="DMSO",
     source_layer=None,  # use current adata.X; use "normalized" to read that layer
+    obs_nan_threshold=0.2,  # drop observations with >20% non-finite features
     variance_threshold=0.01,  # drop bottom 1% by variance
     corr_threshold=0.9,
     snr_threshold=0.8,  # exclude bottom 80% by SNR
@@ -121,6 +127,7 @@ cpt.pp.funnel(
     treatment_key="Treatment",
     control_value="DMSO",
     source_layer=None,  # use current adata.X
+    obs_nan_threshold=0.2,
     variance_threshold=None,
     corr_threshold=None,
     snr_threshold=None,

@@ -203,6 +203,7 @@ def feature_boxplot(
     groupby: str = "WellLabel",
     layer: str | None = "normalized",
     case_sensitive: bool = False,
+    max_features: int | None = 10,
     points: str | bool = "all",
     width: int = 1100,
     height: int = 650,
@@ -215,12 +216,15 @@ def feature_boxplot(
     Plot selected feature distributions grouped by an observation column.
 
     Use ``contains="Actin"`` to select every feature whose name contains
-    "Actin", or pass exact feature names with ``features``.
+    "Actin", or pass exact feature names with ``features``. Substring matches
+    are limited to the first ``max_features`` features by default.
     """
     if groupby not in adata.obs.columns:
         raise KeyError(f"Column '{groupby}' not found in adata.obs.")
     if width <= 0 or height <= 0:
         raise ValueError("width and height must be > 0.")
+    if max_features is not None and max_features < 1:
+        raise ValueError("max_features must be >= 1 or None.")
 
     selected: list[str] = []
     if features is not None:
@@ -236,9 +240,19 @@ def feature_boxplot(
             raise ValueError("contains cannot be empty.")
         var_names = pd.Index(adata.var_names.astype(str))
         haystack = var_names if case_sensitive else var_names.str.lower()
+        matched: list[str] = []
         for pattern in patterns:
             needle = str(pattern) if case_sensitive else str(pattern).lower()
-            selected.extend(var_names[haystack.str.contains(needle, regex=False)].tolist())
+            matched.extend(var_names[haystack.str.contains(needle, regex=False)].tolist())
+        matched = list(dict.fromkeys(matched))
+        if max_features is not None and len(matched) > max_features:
+            warnings.warn(
+                f"Matched {len(matched)} features with contains={patterns}; "
+                f"plotting the first {max_features}. Set max_features=None to plot all.",
+                stacklevel=2,
+            )
+            matched = matched[:max_features]
+        selected.extend(matched)
 
     selected = list(dict.fromkeys(selected))
     if len(selected) == 0:

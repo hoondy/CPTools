@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from importlib.resources import files
+from pathlib import Path
 import warnings
 from typing import Sequence
 
@@ -8,17 +10,39 @@ import numpy as np
 import pandas as pd
 from scipy.stats import median_abs_deviation
 
-from ._utils import to_dense_matrix
+from ._utils import clean_feature_name, to_dense_matrix
 
 
-DEFAULT_BLOCKLIST_KEYWORDS = [
-    "Manders",
-    "RWC",
-    "Location",
-    "Granularity",
-    "Execution",
-    "Euler",
-]
+DEFAULT_BLOCKLIST_KEY = "default"
+
+
+def _load_blocklist_yaml(
+    path: str | Path | None = None,
+    key: str = DEFAULT_BLOCKLIST_KEY,
+) -> list[str]:
+    """Load a simple YAML blocklist containing a top-level list under `key`."""
+    if path is None:
+        blocklist_path = files("CPTools").joinpath("default_blocklists.yaml")
+        lines = blocklist_path.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+
+    in_section = False
+    values: list[str] = []
+    section_header = f"{key}:"
+    for raw_line in lines:
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line:
+            continue
+        if not raw_line.startswith((" ", "\t")):
+            in_section = line == section_header
+            continue
+        if in_section and line.lstrip().startswith("- "):
+            values.append(line.lstrip()[2:].strip().strip("\"'"))
+
+    if not values:
+        raise ValueError(f"No blocklist entries found under YAML key '{key}'.")
+    return values
 
 
 def _matrix_from_layer(adata: ad.AnnData, source_layer: str | None = None) -> np.ndarray:
@@ -36,6 +60,15 @@ def _apply_var_mask(adata: ad.AnnData, mask: np.ndarray, inplace: bool) -> ad.An
         adata._inplace_subset_var(mask)
         return adata
     return adata[:, mask].copy()
+
+
+def _apply_obs_mask(adata: ad.AnnData, mask: np.ndarray, inplace: bool) -> ad.AnnData:
+    if mask.dtype != bool:
+        mask = mask.astype(bool)
+    if inplace:
+        adata._inplace_subset_obs(mask)
+        return adata
+    return adata[mask, :].copy()
 
 
 def robust_zscore_norm(
@@ -101,20 +134,56 @@ def robust_zscore_norm(
 
 def blocklist_filter(
     adata: ad.AnnData,
-    keywords: Sequence[str] = DEFAULT_BLOCKLIST_KEYWORDS,
+    keywords: Sequence[str] | None = None,
+    blocklist_path: str | Path | None = None,
+    blocklist_key: str = DEFAULT_BLOCKLIST_KEY,
     subset: bool = False,
     inplace: bool = True,
 ) -> ad.AnnData:
     """
-    Mark/drop features containing known technical artifact keywords.
+    Mark/drop known noisy CellProfiler features.
 
     By default (``subset=False``), this only writes ``adata.var["pass_blocklist"]``.
     """
     target = adata if inplace else adata.copy()
-    pattern = "|".join(map(str, keywords))
-    keep_mask = ~target.var_names.str.contains(pattern, regex=True)
+
+    if keywords is not None:
+        keyword_list = [str(keyword) for keyword in keywords]
+        if len(keyword_list) == 0:
+            raise ValueError("keywords cannot be empty.")
+        blocklisted_mask = np.zeros(target.n_vars, dtype=bool)
+        for keyword in keyword_list:
+            blocklisted_mask |= np.asarray(
+                target.var_names.str.contains(keyword, regex=False),
+                dtype=bool,
+            )
+        keep_mask = ~blocklisted_mask
+        blocklisted = target.var_names[~keep_mask].astype(str).tolist()
+    else:
+        blocklist = set(_load_blocklist_yaml(path=blocklist_path, key=blocklist_key))
+        candidate_columns = [pd.Series(target.var_names.astype(str), index=target.var_names)]
+        if "feature" in target.var.columns:
+            raw_features = target.var["feature"].astype(str)
+            candidate_columns.append(raw_features)
+            candidate_columns.append(raw_features.map(clean_feature_name))
+
+        blocklisted_mask = np.zeros(target.n_vars, dtype=bool)
+        for candidates in candidate_columns:
+            blocklisted_mask |= candidates.isin(blocklist).to_numpy(dtype=bool)
+
+        keep_mask = ~blocklisted_mask
+        blocklisted = target.var_names[blocklisted_mask].astype(str).tolist()
+
     keep_mask = np.asarray(keep_mask, dtype=bool)
     target.var["pass_blocklist"] = keep_mask
+    target.var["blocklisted"] = ~keep_mask
+    target.uns.setdefault("cptools", {})
+    target.uns["cptools"]["blocklist_filter"] = {
+        "source": "keywords" if keywords is not None else str(blocklist_path or "package:default_blocklists.yaml"),
+        "blocklist_key": blocklist_key,
+        "n_blocklisted": int((~keep_mask).sum()),
+        "blocklisted_features": blocklisted,
+    }
     if subset:
         return _apply_var_mask(target, keep_mask, inplace=True)
     return target
@@ -137,6 +206,32 @@ def nan_filter(
     target.var["pass_non_nan"] = keep_mask
     if subset:
         return _apply_var_mask(target, keep_mask, inplace=True)
+    return target
+
+
+def nan_obs_filter(
+    adata: ad.AnnData,
+    max_nan_fraction: float = 0.2,
+    source_layer: str | None = None,
+    subset: bool = False,
+    inplace: bool = True,
+) -> ad.AnnData:
+    """
+    Mark/drop observations with too many non-finite feature values.
+
+    By default (``subset=False``), this writes ``adata.obs["pass_non_nan"]``.
+    """
+    if not (0 <= max_nan_fraction <= 1):
+        raise ValueError("max_nan_fraction must be in [0, 1].")
+
+    target = adata if inplace else adata.copy()
+    X = _matrix_from_layer(target, source_layer=source_layer)
+    nan_fraction = 1.0 - np.isfinite(X).mean(axis=1)
+    keep_mask = nan_fraction <= max_nan_fraction
+    target.obs["pass_non_nan"] = keep_mask
+    target.obs["nan_fraction"] = nan_fraction.astype(np.float32, copy=False)
+    if subset:
+        return _apply_obs_mask(target, keep_mask, inplace=True)
     return target
 
 
@@ -359,6 +454,7 @@ def funnel(
     treatment_key: str = "Treatment",
     control_value: str = "DMSO",
     source_layer: str | None = None,
+    obs_nan_threshold: float | None = 0.2,
     variance_threshold: float | None = 1e-2,
     corr_threshold: float | None = 0.9,
     snr_threshold: float | None = 0.8,
@@ -382,6 +478,8 @@ def funnel(
         raise ValueError("variance_threshold must be in [0, 1] and is interpreted as a quantile.")
     if corr_threshold is not None and not (-1 <= corr_threshold <= 1):
         raise ValueError("corr_threshold must be in [-1, 1].")
+    if obs_nan_threshold is not None and not (0 <= obs_nan_threshold <= 1):
+        raise ValueError("obs_nan_threshold must be in [0, 1].")
 
     if snr_keep_top_fraction is not None:
         if not (0 < snr_keep_top_fraction <= 1):
@@ -410,15 +508,41 @@ def funnel(
     working.X = source_matrix.astype(np.float32, copy=True)
 
     n0 = working.n_vars
+    obs_nan_fraction_by_obs = pd.Series(np.nan, index=working.obs_names, dtype=np.float32)
     if verbose:
         source_label = source_layer if source_layer is not None else "X"
-        print(f"[funnel] starting with {n0} features from {source_label}")
+        print(f"[funnel] starting with {working.n_obs} observations and {n0} features from {source_label}")
 
     before = working.n_vars
     blocklist_filter(working, subset=True, inplace=True)
     if verbose:
         filtered = before - working.n_vars
         print(f"[funnel] blocklist_filter: filtered {filtered}, remaining {working.n_vars}")
+
+    if obs_nan_threshold is None:
+        working.obs["pass_non_nan"] = np.ones(working.n_obs, dtype=bool)
+        working.obs["nan_fraction"] = np.nan
+        if verbose:
+            print(
+                "[funnel] nan_obs_filter: skipped (obs_nan_threshold=None); "
+                f"remaining {working.n_obs} observations"
+            )
+    else:
+        before_obs = working.n_obs
+        nan_obs_filter(
+            working,
+            max_nan_fraction=obs_nan_threshold,
+            subset=False,
+            inplace=True,
+        )
+        obs_nan_fraction_by_obs = working.obs["nan_fraction"].copy()
+        working._inplace_subset_obs(working.obs["pass_non_nan"].to_numpy(dtype=bool))
+        if verbose:
+            filtered_obs = before_obs - working.n_obs
+            print(
+                "[funnel] nan_obs_filter: filtered "
+                f"{filtered_obs}, remaining {working.n_obs} observations"
+            )
 
     before = working.n_vars
     nan_filter(working, subset=True, inplace=True)
@@ -482,6 +606,15 @@ def funnel(
 
     hv_features = set(working.var_names[working.var["highly_variable"].astype(bool)])
     prefilter_features = set(working.var_names)
+    prefilter_obs = set(working.obs_names)
+
+    target.obs["pass_funnel_obs_prefilter"] = np.array(
+        [name in prefilter_obs for name in target.obs_names],
+        dtype=bool,
+    )
+    target.obs["funnel_nan_fraction"] = obs_nan_fraction_by_obs.reindex(target.obs_names).astype(
+        np.float32
+    )
 
     target.var["pass_funnel_prefilter"] = np.array(
         [name in prefilter_features for name in target.var_names],
@@ -510,6 +643,7 @@ def funnel(
         "treatment_key": treatment_key,
         "control_value": control_value,
         "source_layer": source_layer,
+        "obs_nan_threshold": obs_nan_threshold,
         "variance_threshold": variance_threshold,
         "variance_cutoff": variance_cutoff,
         "corr_threshold": corr_threshold,
@@ -519,17 +653,24 @@ def funnel(
     }
 
     if verbose:
+        obs_prefilter_n = int(target.obs["pass_funnel_obs_prefilter"].sum())
         prefilter_n = int(target.var["pass_funnel_prefilter"].sum())
         hv_n = int(target.var["highly_variable"].sum())
         print(
             "[funnel] annotation on original matrix: "
+            f"pass_funnel_obs_prefilter={obs_prefilter_n}/{target.n_obs}, "
             f"pass_funnel_prefilter={prefilter_n}/{target.n_vars}, "
             f"highly_variable={hv_n}/{target.n_vars}"
         )
 
     if subset:
         if verbose:
-            print(f"[funnel] subset=True: subsetting to {int(target.var['highly_variable'].sum())} features")
+            print(
+                "[funnel] subset=True: subsetting to "
+                f"{int(target.obs['pass_funnel_obs_prefilter'].sum())} observations and "
+                f"{int(target.var['highly_variable'].sum())} features"
+            )
+        target._inplace_subset_obs(target.obs["pass_funnel_obs_prefilter"].to_numpy(dtype=bool))
         target._inplace_subset_var(target.var["highly_variable"].to_numpy(dtype=bool))
     return target
 

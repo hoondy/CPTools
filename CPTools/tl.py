@@ -196,6 +196,89 @@ def _get_data_matrix(adata: ad.AnnData, layer: str | None) -> np.ndarray:
     return to_dense_matrix(adata.layers[layer])
 
 
+def feature_boxplot(
+    adata: ad.AnnData,
+    features: str | Sequence[str] | None = None,
+    contains: str | Sequence[str] | None = None,
+    groupby: str = "WellLabel",
+    layer: str | None = "normalized",
+    case_sensitive: bool = False,
+    points: str | bool = "all",
+    width: int = 1100,
+    height: int = 650,
+    legend: bool = True,
+    title: str | None = None,
+    show: bool = True,
+    save: str | Path | None = None,
+) -> go.Figure | None:
+    """
+    Plot selected feature distributions grouped by an observation column.
+
+    Use ``contains="Actin"`` to select every feature whose name contains
+    "Actin", or pass exact feature names with ``features``.
+    """
+    if groupby not in adata.obs.columns:
+        raise KeyError(f"Column '{groupby}' not found in adata.obs.")
+    if width <= 0 or height <= 0:
+        raise ValueError("width and height must be > 0.")
+
+    selected: list[str] = []
+    if features is not None:
+        requested = [features] if isinstance(features, str) else list(features)
+        missing = [name for name in requested if name not in adata.var_names]
+        if missing:
+            raise ValueError(f"Feature(s) not found in adata.var_names: {missing[:10]}")
+        selected.extend([str(name) for name in requested])
+
+    if contains is not None:
+        patterns = [contains] if isinstance(contains, str) else list(contains)
+        if len(patterns) == 0:
+            raise ValueError("contains cannot be empty.")
+        var_names = pd.Index(adata.var_names.astype(str))
+        haystack = var_names if case_sensitive else var_names.str.lower()
+        for pattern in patterns:
+            needle = str(pattern) if case_sensitive else str(pattern).lower()
+            selected.extend(var_names[haystack.str.contains(needle, regex=False)].tolist())
+
+    selected = list(dict.fromkeys(selected))
+    if len(selected) == 0:
+        raise ValueError(
+            "No features selected. Pass exact feature name(s) with 'features' "
+            "or substring pattern(s) with 'contains'."
+        )
+
+    X = _get_data_matrix(adata, layer=layer)
+    feature_idx = adata.var_names.get_indexer(selected)
+    values = pd.DataFrame(X[:, feature_idx], columns=selected, index=adata.obs_names)
+    values[groupby] = adata.obs[groupby].astype(str).values
+    melted = values.melt(id_vars=groupby, var_name="Feature", value_name="Value")
+
+    fig = px.box(
+        melted,
+        x="Feature",
+        y="Value",
+        color=groupby,
+        points=points,
+        width=width,
+        height=height,
+        title=title or f"Feature distribution by {groupby}",
+        category_orders={"Feature": selected},
+    )
+    fig.update_layout(
+        xaxis_title="Feature",
+        yaxis_title=f"Feature value ({layer or 'X'})",
+        xaxis_tickangle=45,
+        legend_title_text=groupby,
+        showlegend=legend,
+    )
+    _save_plotly_figure(fig, save)
+
+    if show:
+        fig.show()
+        return None
+    return fig
+
+
 def _bh_fdr(p_values: np.ndarray) -> np.ndarray:
     """Benjamini-Hochberg FDR correction."""
     m = len(p_values)

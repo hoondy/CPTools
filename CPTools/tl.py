@@ -13,6 +13,7 @@ from plotly.subplots import make_subplots
 from scipy import stats
 
 from ._utils import to_dense_matrix
+from ._reference_analysis import reference_control_cv, rescue_scores
 
 
 def _save_plotly_figure(

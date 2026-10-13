@@ -18,6 +18,10 @@ dependencies = [
   "scipy>=1.10",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=7"]
+notebook = ["ipykernel>=6", "nbclient>=0.8"]
+
 [tool.setuptools]
 packages = ["CPTools"]
 

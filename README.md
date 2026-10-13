@@ -13,7 +13,8 @@ Cell Painting utilities for:
 
 ## Features
 
-- **Integrated Pipeline**: The `funnel` function combines normalization and multiple filtering steps into one robust workflow.
+- **Explicit Normalization**: Normalize with `robust_zscore_norm` or `reference_normalize`, then use `funnel` for filtering and feature selection.
+- **Shared WT References**: `reference_normalize` separates WT reference wells from mutant vehicle controls, pools within-plate reference variability, and optionally calibrates positive-control gains.
 - **Batch-Aware Statistics**: Normalization and treatment effects are calculated relative to matched controls in each batch.
 - **AnnData Compatibility**: Built directly on top of `AnnData` for seamless integration with `Scanpy`.
 - **High-Quality Visualization**: Interactive Plotly-based plots for exploratory analysis.
@@ -23,7 +24,7 @@ Cell Painting utilities for:
 Cell Painting and morphological profiling produce very high-dimensional, highly correlated, and often noisy data.  
 If raw extracted features are used directly for clustering or machine learning, models can overfit technical artifacts (batch, plate position, segmentation instability) rather than biology.
 
-CPTools uses a strict funnel to convert raw measurements into stable, reproducible biological signal:
+CPTools provides the following steps to convert raw measurements into reproducible profiles. Normalization and whitening are explicit calls; `funnel` performs filtering and feature selection only:
 
 1. `robust_zscore_norm`: Robust plate-wise normalization
 - Problem: plate-to-plate intensity drift from staining, imaging, and instrument variation.
@@ -103,6 +104,8 @@ adata = cpt.pp.zca_whiten(adata)
 
 ## Typical Funnel
 
+Run normalization first. `funnel` does **not** normalize the matrix or perform whitening.
+
 ```python
 cpt.pp.funnel(
     adata,
@@ -139,6 +142,44 @@ cpt.pp.funnel(
 - `adata.var["pass_funnel_prefilter"]`
 - `adata.var["highly_variable"]`
 - `adata.var["replicate_snr"]`
+
+For multiple genotypes or doses, pass
+`replicate_groupby=["Batch", "line", "Concentration_uM"]` to `funnel` or
+`snr_feature_selection`. Treatment is always included in the grouping. This
+prevents genotype-dependent responses from being treated as replicate noise.
+
+## Shared WT controls on genotype-specific plates
+
+Use explicit reference roles when WT and mutant wells both have `Treatment="DMSO"`:
+
+```python
+import anndata as ad
+import CPTools as cpt
+
+adata = ad.read_h5ad("260908_iGLUT_bitbio_ADPD_merged_clean.h5ad")
+normalized = cpt.pp.reference_normalize(
+    adata,
+    reference_query="line == 'WT' and Drug_code == 'c_DM'",
+    source_layer="raw",
+    output_layer="normalized",
+    inplace=False,
+)
+```
+
+This centers every plate on its dedicated WT references and uses one pooled
+within-plate WT SD per feature. It does not center mutant DMSO wells separately.
+Insufficient plate references raise an error; invalid-scale features are flagged
+in `var["pass_reference_normalization"]` and set to NaN. Keep `layers["raw"]`
+as the input to repeated fits. Positive-control calibration is optional and should
+be evaluated with held-out controls before use.
+
+See the [method and API guide](docs/reference_normalization.md) and the runnable
+[iGLUT notebook](output/jupyter-notebook/iglut_reference_normalization.ipynb)
+([percent-format Python](output/jupyter-notebook/iglut_reference_normalization.py)).
+The notebook loads the user's H5AD locally/on HPC; it contains no experimental results.
+
+For development, install `python -m pip install -e '.[test,notebook]'` and run
+`python -m pytest -q`.
 
 To subset features physically, opt in with:
 

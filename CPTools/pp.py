@@ -11,6 +11,11 @@ import pandas as pd
 from scipy.stats import median_abs_deviation
 
 from ._utils import clean_feature_name, to_dense_matrix
+from ._reference_normalization import (
+    apply_reference_normalization,
+    fit_reference_normalization,
+    reference_normalize,
+)
 
 
 DEFAULT_BLOCKLIST_KEY = "default"
@@ -309,6 +314,7 @@ def snr_feature_selection(
     source_layer: str | None = None,
     subset: bool = False,
     inplace: bool = True,
+    replicate_groupby: str | Sequence[str] | None = None,
 ) -> ad.AnnData:
     """
     Select features by replicate signal-to-noise ratio (SNR).
@@ -322,6 +328,10 @@ def snr_feature_selection(
       - ``"pooled"``: weighted by (n_group - 1), preferred for unequal replicate counts
       - ``"mean"``: simple mean of group variances
       - ``"median"``: robust median of group variances
+
+    ``replicate_groupby`` adds metadata keys (e.g. Batch, line, Dose) to the
+    treatment grouping. Treatment is always included. Missing metadata values
+    form explicit groups, so vehicle wells with missing dose are retained.
     """
     if treatment_key not in adata.obs.columns:
         raise KeyError(f"Missing '{treatment_key}' in adata.obs")
@@ -334,18 +344,28 @@ def snr_feature_selection(
     feature_names = adata.var_names.to_list()
 
     df = pd.DataFrame(X, columns=feature_names, index=adata.obs_names)
-    df[treatment_key] = adata.obs[treatment_key].astype(str).values
-
-    group_sizes = df.groupby(treatment_key).size()
+    extra_keys = ([replicate_groupby] if isinstance(replicate_groupby, str)
+                  else list(replicate_groupby or []))
+    group_keys = list(dict.fromkeys([treatment_key, *extra_keys]))
+    missing = [key for key in group_keys if key not in adata.obs]
+    if missing:
+        raise KeyError(f"Missing replicate grouping columns: {missing}")
+    labels = adata.obs[group_keys].copy()
+    labels[treatment_key] = labels[treatment_key].astype(str)
+    groups = labels.groupby(group_keys, dropna=False, observed=True, sort=False).ngroup()
+    group_sizes = groups.value_counts()
     replicated_groups = group_sizes[group_sizes >= min_replicates].index
     if len(replicated_groups) == 0:
         raise ValueError(f"No treatment groups with at least {min_replicates} replicates.")
 
-    df = df[df[treatment_key].isin(replicated_groups)].copy()
-    non_controls = df[df[treatment_key] != control_value]
+    replicated = groups.isin(replicated_groups)
+    df = df.loc[replicated].copy()
+    groups = groups.loc[replicated]
+    non_control_mask = labels.loc[df.index, treatment_key] != control_value
+    non_controls = df.loc[non_control_mask]
     if non_controls.empty:
         raise ValueError("No non-control groups available for SNR calculation.")
-    n_non_control_groups = int(non_controls[treatment_key].nunique())
+    n_non_control_groups = int(groups.loc[non_control_mask].nunique())
     if n_non_control_groups < 2:
         raise ValueError(
             "SNR requires at least 2 non-control treatment groups after replicate filtering "
@@ -354,12 +374,12 @@ def snr_feature_selection(
 
     # Calculate Signal (Variance Between Treatment Means)
     # Group by Treatment -> Calculate Mean Vector for each Drug -> Calculate Variance of those Means
-    signal = non_controls.groupby(treatment_key)[feature_names].mean().var(axis=0, ddof=1).fillna(0.0)
+    signal = non_controls.groupby(groups.loc[non_control_mask]).mean().var(axis=0, ddof=1).fillna(0.0)
     # Calculate Noise (Within-group replicate variance)
     # Group by Treatment -> variance vector per group -> aggregate across groups.
-    var_by_group = df.groupby(treatment_key)[feature_names].var(ddof=1)
+    var_by_group = df.groupby(groups).var(ddof=1)
     if noise_aggregation == "pooled":
-        group_sizes = df.groupby(treatment_key).size().reindex(var_by_group.index)
+        group_sizes = groups.value_counts().reindex(var_by_group.index)
         weights = (group_sizes - 1).clip(lower=1).astype(np.float64)
         weighted_sum = var_by_group.mul(weights, axis=0).sum(axis=0)
         noise = (weighted_sum / float(weights.sum())).fillna(0.0)
@@ -400,6 +420,7 @@ def snr_feature_selection(
         "min_replicates": min_replicates,
         "noise_aggregation": noise_aggregation,
         "subset": subset,
+        "replicate_groupby": group_keys,
     }
 
     if subset:
@@ -462,9 +483,10 @@ def funnel(
     subset: bool = False,
     verbose: bool = True,
     inplace: bool = True,
+    replicate_groupby: str | Sequence[str] | None = None,
 ) -> ad.AnnData:
     """
-    A series of filters and feature selections.
+    A series of filters and feature selections. Does not normalize the input.
 
     Filtering is calculated from ``adata.X`` by default. Pass ``source_layer``
     to calculate filters from a specific layer without replacing ``adata.X``.
@@ -594,6 +616,7 @@ def funnel(
             treatment_key=treatment_key,
             control_value=control_value,
             quantile_threshold=snr_threshold,
+            replicate_groupby=replicate_groupby,
             subset=False,
             inplace=True,
         )
@@ -650,6 +673,8 @@ def funnel(
         "snr_threshold": snr_threshold,
         "subset": subset,
         "verbose": verbose,
+        "replicate_groupby": ([replicate_groupby] if isinstance(replicate_groupby, str)
+                              else list(replicate_groupby or [])),
     }
 
     if verbose:

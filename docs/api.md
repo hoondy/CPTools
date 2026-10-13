@@ -49,6 +49,19 @@ adata = cpt.io.read_harmony(
 
 ## Preprocessing (`cpt.pp`)
 
+### Shared-reference normalization
+
+`cpt.pp.reference_normalize(adata, *, reference_query, batch_key='Batch', source_layer='raw', output_layer='normalized', inplace=True, **fit_options)`
+
+Plate-specific reference centering and pooled within-plate reference SD, with
+optional regularized positive-control gains. Use explicit WT reference roles
+when WT and mutant DMSO wells coexist. The separate
+`fit_reference_normalization` / `apply_reference_normalization` functions support
+held-out validation. See [full signatures, formulas and diagnostics](reference_normalization.md).
+
+Related analysis functions: `cpt.tl.reference_control_cv` and
+`cpt.tl.rescue_scores`, documented in the same guide.
+
 ### `robust_zscore_norm`
 `cpt.pp.robust_zscore_norm(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', epsilon=1e-06, source_layer='raw', inplace=True)`
 
@@ -181,7 +194,10 @@ Mark or drop highly correlated features, keeping the representative with the hig
 ---
 
 ### `snr_feature_selection`
-`cpt.pp.snr_feature_selection(adata, treatment_key='Treatment', control_value='DMSO', keep_top_fraction=0.2, quantile_threshold=None, min_replicates=2, noise_aggregation='pooled', source_layer=None, subset=False, inplace=True)`
+`cpt.pp.snr_feature_selection(adata, treatment_key='Treatment', control_value='DMSO', keep_top_fraction=0.2, quantile_threshold=None, min_replicates=2, noise_aggregation='pooled', source_layer=None, subset=False, inplace=True, replicate_groupby=None)`
+
+`replicate_groupby` adds metadata keys to treatment when defining replicates, e.g.
+`['Batch', 'line', 'Concentration_uM']`. Missing doses form explicit groups.
 
 Select features by replicate signal-to-noise ratio (SNR).
 
@@ -235,7 +251,9 @@ Apply control-based regularized ZCA whitening.
 ---
 
 ### `funnel`
-`cpt.pp.funnel(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', source_layer=None, obs_nan_threshold=0.2, variance_threshold=0.01, corr_threshold=0.9, snr_threshold=0.8, snr_keep_top_fraction=None, subset=False, verbose=True, inplace=True)`
+`cpt.pp.funnel(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', source_layer=None, obs_nan_threshold=0.2, variance_threshold=0.01, corr_threshold=0.9, snr_threshold=0.8, snr_keep_top_fraction=None, subset=False, verbose=True, inplace=True, replicate_groupby=None)`
+
+Does not normalize or whiten. `replicate_groupby` is forwarded to SNR selection.
 
 A comprehensive feature filtering and selection pipeline.
 

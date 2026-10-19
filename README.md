@@ -1,7 +1,7 @@
 # CPTools
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Scanpy](https://img.shields.io/badge/dependency-Scanpy-brightgreen.svg)](https://scanpy.readthedocs.io/)
 
 Cell Painting utilities for:
@@ -15,6 +15,8 @@ Cell Painting utilities for:
 
 - **Explicit Normalization**: Normalize with `robust_zscore_norm` or `reference_normalize`, then use `funnel` for filtering and feature selection.
 - **Shared WT References**: `reference_normalize` separates WT reference wells from mutant vehicle controls, pools within-plate reference variability, and optionally calibrates positive-control gains.
+- **Robust References**: `robust_reference_normalize` estimates plate offsets from several shared anchors, shrinks them when they are not larger than their noise, and can scale by replicate residuals of all replicated groups.
+- **Bias-aware Geometry**: `group_separation`, `profile_shift` and `feature_contrasts` test genotype separation and treatment shifts along a phenotype axis, correcting distances and projections for well-sampling noise.
 - **Batch-Aware Statistics**: Normalization and treatment effects are calculated relative to matched controls in each batch.
 - **AnnData Compatibility**: Built directly on top of `AnnData` for seamless integration with `Scanpy`.
 - **High-Quality Visualization**: Interactive Plotly-based plots for exploratory analysis.
@@ -177,6 +179,11 @@ See the [method and API guide](docs/reference_normalization.md) and the runnable
 [iGLUT notebook](output/jupyter-notebook/iglut_reference_normalization.ipynb)
 ([percent-format Python](output/jupyter-notebook/iglut_reference_normalization.py)).
 The notebook loads the user's H5AD locally/on HPC; it contains no experimental results.
+
+For few references per plate, compare `cpt.pp.robust_reference_normalize`
+(multi-anchor plate offsets with James-Stein shrinkage and an optional
+replicate-residual scale) using `reference_control_cv(..., robust_options=...)`.
+`rescue_scores` also reports noise-debiased projections; see the guide.
 
 For development, install `python -m pip install -e '.[test,notebook]'` and run
 `python -m pytest -q`.

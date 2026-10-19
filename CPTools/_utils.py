@@ -52,3 +52,17 @@ def make_unique(values: Iterable[str]) -> list[str]:
             out.append(f"{value}.{count}")
         seen[value] = count + 1
     return out
+
+
+def bh_fdr(p_values: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg FDR correction."""
+    p_values = np.asarray(p_values, dtype=np.float64)
+    m = len(p_values)
+    order = np.argsort(p_values)
+    ranked = p_values[order]
+    q = ranked * m / np.arange(1, m + 1)
+    q = np.minimum.accumulate(q[::-1])[::-1]
+    q = np.clip(q, 0.0, 1.0)
+    out = np.empty_like(q)
+    out[order] = q
+    return out

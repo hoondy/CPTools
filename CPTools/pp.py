@@ -16,6 +16,10 @@ from ._reference_normalization import (
     fit_reference_normalization,
     reference_normalize,
 )
+from ._robust_reference import (
+    fit_robust_reference_normalization,
+    robust_reference_normalize,
+)
 
 
 DEFAULT_BLOCKLIST_KEY = "default"
@@ -102,6 +106,7 @@ def robust_zscore_norm(
 
     batch_values = target.obs[batch_key].astype(str)
     treatment_values = target.obs[treatment_key].astype(str)
+    n_zero_mad = 0
 
     for batch in pd.unique(batch_values):
         batch_mask = batch_values == batch
@@ -119,8 +124,19 @@ def robust_zscore_norm(
 
         med = np.nanmedian(controls, axis=0)
         mad = median_abs_deviation(controls, axis=0, scale="normal", nan_policy="omit")
+        n_zero_mad += int(np.sum(mad <= epsilon))
         transformed = (current - med) / (mad + epsilon)
         X_norm[batch_mask.to_numpy(), :] = transformed.astype(np.float32, copy=False)
+
+    if n_zero_mad:
+        # Tied control values (common with few controls or discrete features)
+        # give MAD=0, so non-tied wells are divided by epsilon (|z| ~ 1/epsilon).
+        warnings.warn(
+            f"{n_zero_mad} batch x feature control MADs are <= epsilon; those values are divided "
+            f"by ~epsilon={epsilon} and can reach |z| ~ {1 / epsilon:.0e}. Filter such features "
+            "or use a pooled scale (reference_normalize / robust_reference_normalize).",
+            stacklevel=2,
+        )
 
     if source_layer is None and "raw" not in target.layers:
         target.layers["raw"] = np.array(X, copy=True)
@@ -442,6 +458,8 @@ def zca_whiten(
 
     target = adata if inplace else adata.copy()
     X = _matrix_from_layer(target, source_layer=source_layer)
+    if not np.isfinite(X).all():
+        raise ValueError("ZCA whitening requires finite values; remove non-finite features first (nan_filter).")
     treatment = target.obs[treatment_key].astype(str)
     control_mask = treatment == control_value
 

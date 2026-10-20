@@ -460,3 +460,147 @@ wells. Prefer axis and shift groups that share no wells.
 Per-feature Welch tests for `{name: (a, b)}` contrasts (b − a): difference,
 Cohen's d, t, p and BH q within each contrast, as a long table.
 
+---
+
+### Hit calling and empirical nulls: `replicate_map`, `pseudo_treatment_null`, `empirical_pvalues`
+
+`cpt.tl.replicate_map(adata, *, treatment_key='Treatment', control_value='DMSO', batch_key='Batch', annotation_key=None, treatments=None, layer='normalized', features=None, n_perm=1000, random_state=0)`
+
+Replicate retrieval by mean average precision (mAP), as in copairs
+(Kalinin et al. 2024). Each well of a treatment is a query. It ranks the
+treatment's other wells (positives, on any plate) against the control wells of
+its own plate (negatives) by cosine similarity. Average precision summarizes
+one query's ranking, and mAP averages it over the treatment's wells. On each
+plate, the treatment's wells and the controls are centered on their joint mean
+before cosine similarity.
+
+One row per treatment: `n_wells`, `n_batches`, `n_controls`, `mAP`,
+`null_mean` (expected mAP under no effect), `p_value`, BH `q_value`, `p_min`
+(the smallest attainable p-value), `n_perm` and `exact`.
+
+- **Null.** Treatment and control labels are shuffled within each plate, keeping
+  the per-plate counts, and mAP is recomputed. When there are at most `n_perm`
+  distinct labelings, all of them are enumerated and the p-value is exact.
+  The test is valid when treatment and control wells of a plate are
+  exchangeable; controls in fixed positions (e.g. one column) break that.
+- **Centering.** The joint mean does not depend on which wells are labeled
+  treated, so the label shuffle stays exact. Any per-plate shift already in the
+  layer cancels. Centering on the controls alone, as a layer centered on DMSO
+  per plate does, gives a treatment's wells a shared offset (the noise of the
+  control mean), and inert replicates then retrieve each other. In simulations
+  with 8 controls and triplicates, a null of random ranks (as in copairs) then
+  gave p < 0.05 for 8%, 28% and 92% of inert treatments at 20, 100 and 500
+  features. The label shuffle here gave 3–7%. Per-plate scales estimated from
+  the controls (robust z-scores) are not undone.
+- **Resolution.** Triplicates and 8 controls on one plate give C(11, 3) = 165
+  labelings, so `p_min` = 1/165 ≈ 0.006. Clear hits reach 1/165 to about
+  4/165. With thousands of compounds, BH q < 0.05 therefore needs a large
+  fraction of active compounds. With this layout, rank on mAP and use
+  p < 0.05 as a filter. 16 controls per plate raise the number of labelings
+  to C(19, 3) = 969.
+- **Consistency** (`annotation_key="MOA"`): each treatment's consensus profile
+  (its mean well, centered on the mean of all analyzed wells on its plate)
+  retrieves treatments with the same annotation against all other annotated
+  treatments. The result has one row per annotation value shared by at least
+  2 treatments. The null draws random treatment groups of the same size.
+  Treatments without an annotation are dropped. Restrict the analysis to
+  phenotypically active treatments with `treatments=`. Centering on the
+  plate's controls instead would make treatments on one plate retrieve each
+  other: with no MOA effect and each MOA on a single plate, 85–100% of MOAs
+  had p < 0.05 in simulation, against none with the plate mean. Annotations
+  that cluster on plates remain confounded with plate.
+
+Hit calling in a drug screen, with one row per treatment:
+
+```python
+hv = adata.var_names[adata.var["highly_variable"].to_numpy()]
+activity = cpt.tl.replicate_map(adata, treatment_key="Treatment", control_value="DMSO",
+                                batch_key="Batch", layer="normalized", features=hv)
+info = (adata.obs.astype({"Treatment": str}).drop_duplicates("Treatment")
+        .set_index("Treatment")[["Target", "MOA"]])
+activity = activity.join(info, on="treatment").sort_values(["p_value", "mAP"], ascending=[True, False])
+active = activity.loc[activity["p_value"] < 0.05, "treatment"]
+moa = cpt.tl.replicate_map(adata, annotation_key="MOA", treatments=active, layer="normalized", features=hv)
+```
+
+`cpt.tl.pseudo_treatment_null(adata, *, treatment_key='Treatment', control_value='DMSO', batch_key='Batch', n_per_group=3, n_draws=1000, groupby=None, query=None, include_query=None, min_remaining=2, random_state=0)`
+
+This function draws random groups of `n_per_group` control wells from the same
+plate as fake treatments ("DMSO pseudo-drugs"). It returns a new AnnData in
+which every draw is a pseudo-plate `"<batch>|pseudo_<d>"`. The pseudo-plate
+holds copies of all control wells of the source plate, and the drawn wells are
+relabeled `"pseudo_<d>"` in `treatment_key`. Any score that compares a
+treatment with controls on the same plate therefore runs unchanged on the
+result, and each pseudo-drug is compared with the controls that remain on its
+plate.
+
+- `query` restricts which control wells may be drawn (e.g. the drug-screen
+  plates). `groupby` draws within cells, e.g. plate × genotype. A cell needs
+  `n_per_group + min_remaining` drawable wells. `include_query` copies further
+  wells unchanged into each pseudo-plate, e.g. WT references labeled
+  differently from the drawn vehicle wells.
+- Draws are spread evenly over plates and are distinct within a plate. With 8
+  controls per plate, a plate offers at most C(8, 3) = 56 triples. If fewer
+  distinct triples exist than requested, all of them are used and a warning
+  reports the smaller total.
+- Added obs columns: `pseudo_draw`, `pseudo_role` (`"pseudo_treatment"` or
+  `"control"`), `pseudo_source_batch` and `pseudo_source_well`. X, layers,
+  obsm, var and varm are copied, and parameters go to
+  `uns["pseudo_treatment_null"]`. The result writes to H5AD.
+- A pseudo-drug has `n_per_group` fewer controls than a real drug, so magnitude
+  scores of pseudo-drugs are slightly noisier. That makes the null
+  conservative for those scores. Correlations are scale-free and unaffected.
+- Pseudo-drugs carry no position, solvent or drug-well effects. If most inert
+  compounds beat the pseudo-drugs, the shared component lives in the drug
+  wells, not in the noise of the DMSO centroid.
+
+`cpt.tl.empirical_pvalues(observed, null, *, alternative='greater')`
+
+This helper takes observed scores and null scores from pseudo-treatments. With
+n null scores, `"greater"` gives p = (1 + #{null ≥ score}) / (1 + n); `"less"`
+uses null ≤ score; `"two-sided"` is min(1, 2 × the smaller one-sided p). It
+returns `score`, `null_z`, `p_value` and BH `q_value`, indexed like
+`observed`. The smallest attainable p is 1/(1 + n), and twice that for
+two-sided tests. Pseudo-drugs from one plate share wells, so the effective
+null size is smaller than n.
+
+Connectivity ranking with a null. Here the disease vector comes from a mutant
+line scored as a treatment (`MUT`) against WT wells labeled `DMSO` on its own
+plates, and pseudo-drugs are drawn from the drug plates only:
+
+```python
+import pandas as pd
+
+null = cpt.tl.pseudo_treatment_null(adata, treatment_key="Treatment", control_value="DMSO",
+                                    batch_key="Batch", n_per_group=3, n_draws=1000,
+                                    query="plate_type == 'drug'")
+vectors = cpt.tl.treatment_vectors(adata, layer="normalized")
+null_vectors = cpt.tl.treatment_vectors(null, layer="normalized")
+ranked = cpt.tl.rank_treatment_correlations(pd.concat([vectors, null_vectors]),
+                                            treatment="MUT", show=False)
+score = ranked.set_index("treatment")["correlation"]
+is_null = score.index.isin(null_vectors.index)
+reversal = cpt.tl.empirical_pvalues(score[~is_null], score[is_null], alternative="less")
+```
+
+Rescue scores need pseudo-drugs drawn from mutant vehicle wells, within plate ×
+genotype cells, and a comparison within each genotype. Here WT references are
+WT + DMSO wells on every plate. If references carry their own label (e.g.
+`Treatment == 'reference'`), pass that selection as `include_query` so they are
+copied into each pseudo-plate:
+
+```python
+null = cpt.tl.pseudo_treatment_null(adata, treatment_key="Treatment", control_value="DMSO",
+                                    groupby="line", query="line != 'WT'", n_draws=500)
+roles = dict(reference_query="line == 'WT' and Treatment == 'DMSO'",
+             disease_control_query="line != 'WT' and Treatment == 'DMSO'")
+pseudo = cpt.tl.rescue_scores(null, treatment_query="pseudo_role == 'pseudo_treatment'", **roles)
+real = cpt.tl.rescue_scores(adata, treatment_query="Treatment != 'DMSO'", **roles)
+for line, rows in real.groupby("line"):
+    reference = pseudo.loc[pseudo["line"] == line, "rescue_projection_debiased"]
+    p = cpt.tl.empirical_pvalues(rows["rescue_projection_debiased"], reference)
+```
+
+Triplicate pseudo-drugs need at least 5 vehicle wells per genotype and plate.
+With fewer, use a positional null instead, e.g. WT wells placed in screening
+positions and scored as a pseudo-disease.

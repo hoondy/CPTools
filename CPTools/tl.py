@@ -15,6 +15,8 @@ from scipy import stats
 from ._utils import bh_fdr as _bh_fdr, to_dense_matrix
 from ._reference_analysis import reference_control_cv, rescue_scores
 from ._profile_geometry import feature_contrasts, group_separation, profile_shift
+from ._pseudo_treatments import empirical_pvalues, pseudo_treatment_null
+from ._replicate_retrieval import replicate_map
 
 
 def _save_plotly_figure(

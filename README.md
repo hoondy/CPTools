@@ -15,6 +15,7 @@ Cell Painting utilities for:
 
 - **Explicit Normalization**: Normalize with `robust_zscore_norm` or `reference_normalize`, then use `funnel` for filtering and feature selection.
 - **Shared WT References**: `reference_normalize` separates WT reference wells from mutant vehicle controls, pools within-plate reference variability, and optionally calibrates positive-control gains.
+- **Control-based Feature QC**: `control_agreement_filter` flags features on which two copies of the same control (e.g. dedicated and scattered WT+DMSO wells) disagree beyond well noise, and reports whether a disagreement is too broad to filter away.
 - **Robust References**: `robust_reference_normalize` estimates plate offsets from several shared anchors, shrinks them when they are not larger than their noise, and can scale by replicate residuals of all replicated groups.
 - **Bias-aware Geometry**: `group_separation`, `profile_shift` and `feature_contrasts` test genotype separation and treatment shifts along a phenotype axis, correcting distances and projections for well-sampling noise.
 - **Hit Calling with Nulls**: `replicate_map` scores replicate retrieval (copairs-style mAP) with label-shuffle p-values; `pseudo_treatment_null` turns random same-plate DMSO well groups into pseudo-drugs, so any score gets an empirical null via `empirical_pvalues`.
@@ -197,7 +198,8 @@ cpt.pp.funnel(adata, batch_key="Batch", treatment_key="Treatment", control_value
 
 Individual filters follow the same rule:
 - `cpt.pp.blocklist_filter(...)`, `cpt.pp.nan_filter(...)`,
-  `cpt.pp.variance_filter(...)`, `cpt.pp.correlation_filter(...)`
+  `cpt.pp.variance_filter(...)`, `cpt.pp.correlation_filter(...)`,
+  `cpt.pp.control_agreement_filter(...)`
 - default is annotation-only (`subset=False`)
 - pass `subset=True` to actually remove features
 

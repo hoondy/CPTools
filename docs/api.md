@@ -207,6 +207,47 @@ Mark or drop highly correlated features, keeping the representative with the hig
 
 ---
 
+### `control_agreement_filter`
+`cpt.pp.control_agreement_filter(adata, *, copies, batch_key=None, source_layer=None, alpha=0.05, subset=False, inplace=True)`
+
+Flag features on which two copies of the same control condition disagree
+beyond well noise, e.g. dedicated vs scattered WT+DMSO wells. Uses control
+wells only, so no genotype or treatment effect enters the selection.
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | `anndata.AnnData` | | The AnnData object to filter. |
+| `copies` | `Mapping[str, tuple[str, str]]` | | Name → two `obs.query` selections of the same condition in different well sets. |
+| `batch_key` | `str \| None` | `None` | Compare the copies within each batch where both are present, so plate offsets cancel. With `None`, the queries must restrict the comparison themselves. |
+| `source_layer` | `str \| None` | `None` | Layer to use (`None` = `adata.X`). Raw and normalized input give the same result within a batch. |
+| `alpha` | `float` | `0.05` | Features with Benjamini–Hochberg q below `alpha` fail. |
+| `subset` | `bool` | `False` | If `True`, removes failing features. Otherwise only marks them. |
+| `inplace` | `bool` | `True` | Whether to update the AnnData object in place. |
+
+**Method.** For each comparison k: z_k = (mean_b − mean_a) / (s·√(1/n_a + 1/n_b)),
+with s the feature's pooled within-copy SD. The statistic is mean_k(z_k²),
+about 1 when copies differ only by noise, tested against F(K, df).
+
+**Writes** `var["control_agreement_stat"]`, `var["control_agreement_q"]`,
+`var["pass_control_agreement"]`, and `uns["cptools"]["control_agreement_filter"]`,
+including `median_abs_z_ratio` per comparison. A ratio near 1 means copies agree in
+typical features. A ratio well above 1 (a warning is raised above 1.5) means the
+disagreement is broad: dropping features will not remove it, so correct it instead.
+
+**Example**
+```python
+copies = {
+    "DMSO": ("line == 'WT' and Drug_code == 'c_DM'", "line == 'WT' and Drug_code == 'c_DM_rand'"),
+    "cells_only": ("line == 'WT' and Drug_code == 'c'", "line == 'WT' and Drug_code == 'c_rand'"),
+}
+cpt.pp.control_agreement_filter(adata, copies=copies, batch_key="Batch", source_layer="raw")
+keep = adata.var["pass_control_agreement"]
+```
+
+---
+
 ### `snr_feature_selection`
 `cpt.pp.snr_feature_selection(adata, treatment_key='Treatment', control_value='DMSO', keep_top_fraction=0.2, quantile_threshold=None, min_replicates=2, noise_aggregation='pooled', source_layer=None, subset=False, inplace=True, replicate_groupby=None)`
 

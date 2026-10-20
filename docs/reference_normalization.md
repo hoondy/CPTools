@@ -168,6 +168,32 @@ relative to the true plate-wide WT center fell from 1.60 (per-plate WT mean) to
 and nearly matched no centering when there was no plate effect. Validate on
 your plates with the CV below (`robust_options`), not with rescue rankings.
 
+## Feature QC from repeated controls
+
+When the same control condition occupies two well sets, such as the dedicated
+reference wells and scattered screening copies on WT_CTRL, their disagreement
+estimates how much a feature responds to well handling rather than to biology.
+`cpt.pp.control_agreement_filter` tests this per feature using control wells
+only, and reports each comparison's median |z| relative to pure noise:
+
+```python
+copies = {
+    "DMSO": ("line == 'WT' and Drug_code == 'c_DM'", "line == 'WT' and Drug_code == 'c_DM_rand'"),
+    "Ivermectin_B1a": ("Drug_code == 'c_Ivermectin'", "line == 'WT' and Treatment == 'Ivermectin_B1a' and Drug_code != 'c_Ivermectin'"),
+    "cells_only": ("line == 'WT' and Drug_code == 'c'", "line == 'WT' and Drug_code == 'c_rand'"),
+}
+cpt.pp.control_agreement_filter(adata, copies=copies, batch_key="Batch", source_layer="raw")
+adata.uns["cptools"]["control_agreement_filter"]["median_abs_z_ratio"]
+```
+
+If the median ratio is near 1, a minority of features is responsible, and
+dropping the flagged features is appropriate. If it is well above 1, the copies
+differ in typical features. Filtering then removes much of the feature space
+without removing the difference. Every disease vector that compares scattered
+mutant wells with dedicated WT wells also contains that difference, so correct
+it rather than filter it. A design with both copies on every plate gives one
+comparison per plate and much better per-feature power.
+
 ## Held-out diagnostics
 
 ```python

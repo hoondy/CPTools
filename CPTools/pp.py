@@ -20,6 +20,7 @@ from ._robust_reference import (
     fit_robust_reference_normalization,
     robust_reference_normalize,
 )
+from ._control_filter import control_agreement_filter
 
 
 DEFAULT_BLOCKLIST_KEY = "default"

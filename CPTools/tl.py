@@ -12,8 +12,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy import stats
 
-from ._utils import to_dense_matrix
+from ._utils import bh_fdr as _bh_fdr, to_dense_matrix
 from ._reference_analysis import reference_control_cv, rescue_scores
+from ._profile_geometry import feature_contrasts, group_separation, profile_shift
 
 
 def _save_plotly_figure(
@@ -189,11 +190,8 @@ def _get_data_matrix(adata: ad.AnnData, layer: str | None) -> np.ndarray:
     if layer is None:
         return to_dense_matrix(adata.X)
     if layer not in adata.layers:
-        warnings.warn(
-            f"Layer '{layer}' not found. Falling back to adata.X.",
-            stacklevel=2,
-        )
-        return to_dense_matrix(adata.X)
+        # No silent fallback: X may hold a different transformation (e.g. ZCA).
+        raise KeyError(f"Layer '{layer}' not found; pass layer=None to use adata.X explicitly.")
     return to_dense_matrix(adata.layers[layer])
 
 
@@ -292,19 +290,6 @@ def feature_boxplot(
         fig.show()
         return None
     return fig
-
-
-def _bh_fdr(p_values: np.ndarray) -> np.ndarray:
-    """Benjamini-Hochberg FDR correction."""
-    m = len(p_values)
-    order = np.argsort(p_values)
-    ranked = p_values[order]
-    q = ranked * m / np.arange(1, m + 1)
-    q = np.minimum.accumulate(q[::-1])[::-1]
-    q = np.clip(q, 0.0, 1.0)
-    out = np.empty_like(q)
-    out[order] = q
-    return out
 
 
 def _normalize_treatments(treatments: str | Sequence[str] | None) -> list[str] | None:

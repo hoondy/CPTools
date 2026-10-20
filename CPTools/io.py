@@ -101,7 +101,18 @@ def _prepare_schema(
         content_is_control = meta["Content"].astype(str).isin(CONTROL_CONTENT_VALUES)
         meta.loc[content_is_control, "Treatment"] = control_value
 
-    invalid_treatment = meta["Treatment"].astype(str).isin({"NA", "nan", "None", ""})
+    # isna() is required: pandas 3 keeps missing values as NA under astype(str).
+    invalid_treatment = meta["Treatment"].isna() | meta["Treatment"].astype(str).isin({"NA", "nan", "None", ""})
+    unlabeled = invalid_treatment.copy()
+    if "Content" in meta.columns:
+        unlabeled &= ~meta["Content"].astype(str).isin(CONTROL_CONTENT_VALUES)
+    if unlabeled.any():
+        warnings.warn(
+            f"{int(unlabeled.sum())} schema rows have no Treatment and will be labeled "
+            f"'{control_value}' (control). Example wells: "
+            f"{meta.loc[unlabeled, 'Batch_row_col'].head(5).tolist()}",
+            stacklevel=3,
+        )
     meta.loc[invalid_treatment, "Treatment"] = control_value
 
     if "Treatment" in meta.columns:
@@ -197,7 +208,8 @@ def _read_single_harmony(
     var = pd.DataFrame(index=var_names)
     var["feature"] = feature_cols
 
-    adata = ad.AnnData(feature_matrix, obs=obs, var=var, dtype=np.float32)
+    # feature_matrix is already float32; AnnData(dtype=...) was removed in anndata 0.13.
+    adata = ad.AnnData(feature_matrix, obs=obs, var=var)
     adata.layers["raw"] = adata.X.copy()
 
     if "Treatment" in adata.obs.columns:

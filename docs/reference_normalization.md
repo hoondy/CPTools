@@ -113,6 +113,61 @@ Two positives cannot identify a general high-dimensional transformation, and a
 technical effect on WT may not act identically on mutants. Do not fit mutant
 positive responses to a WT consensus or assume the positives are rescue controls.
 
+## Robust variant: multi-anchor, shrunk plate offsets, replicate scale
+
+With three reference wells per plate, the plate center m[p,f] has sampling
+error SD/sqrt(3) in every feature, and that error is added to every well on the
+plate. Per-plate WT centering can then improve held-out agreement of the
+reference itself while *worsening* agreement of positive controls on the same
+plates. That pattern means the plate shift estimated from a few adjacent
+reference wells does not transfer to neighbouring conditions, let alone to
+dispersed wells. `fit_robust_reference_normalization`
+addresses this in three ways.
+
+```python
+model = cpt.pp.fit_robust_reference_normalization(
+    adata, reference_query=REFERENCE,
+    anchor_queries=POSITIVES,            # optional: same WT condition on every plate
+    plate_shrinkage=True,                # James-Stein; needs >= 4 plates
+    scale="replicate",                   # or "reference" / "anchors"
+    scale_groupby=["line", "Drug_code"], # replicate groups (Batch is added)
+    scale_query="Drug_code != 'c_DM'",   # e.g. dispersed wells only
+    scale_estimator="median",            # resists toxic/failed groups
+)
+normalized = cpt.pp.apply_reference_normalization(adata, model, inplace=False)
+```
+
+1. **Anchors.** Per feature, fit loc[c,p] = mu[c] + delta[p] across the
+   reference and anchor conditions (weighted by finite well counts). Anchors
+   only inform the shared plate offset delta[p]; the origin is still
+   mu[reference]. One condition reproduces the plain per-plate means.
+2. **Shrinkage.** center[p] = mu[reference] + B * delta[p] with
+   B = max(0, 1 - (P - 3) v / sum_p delta[p]^2) (positive-part Efron-Morris).
+   v is the variance of an estimated offset: anchor well noise plus, with two
+   or more anchors, the plate × condition interaction variance estimated from
+   additive-fit residuals. When plate shifts are small or do not transfer
+   between conditions, B -> 0 and plates are centered on the pooled reference
+   mean. When shared shifts are large, B -> 1. With six plates, B has a median
+   of about 0.3 even under no plate effect; that is the cost of P = 6.
+3. **Scale.** `"replicate"` pools within-group residual variance of replicate
+   groups (e.g. every drug triplicate on every plate: about 1,100 df instead of
+   12). Group means never enter it. Adjacent column-23 reference wells likely
+   understate the well-to-well noise of dispersed wells, which inflates every
+   z-score and every disease norm. Compare `model["pooled_sd"]` for
+   `scale="reference"` and `"replicate"` on your data.
+
+The returned model is compatible with `apply_reference_normalization` and H5AD
+storage. Extra diagnostics: `plate_offsets` (unshrunk delta),
+`shrinkage_factor`, `plate_offset_noise_var`, `plate_condition_interaction_var`,
+`condition_means`, `condition_within_sd`, `scale_dof`.
+
+In a simulation of the six-plate layout (local column-23 effects with SD 1.5
+noise units, small plate-wide shifts), the RMS error of the plate center
+relative to the true plate-wide WT center fell from 1.60 (per-plate WT mean) to
+0.84. Held-out positives improved over WT centering in every scenario tested
+and nearly matched no centering when there was no plate effect. Validate on
+your plates with the CV below (`robust_options`), not with rescue rankings.
+
 ## Held-out diagnostics
 
 ```python
@@ -124,8 +179,20 @@ qc = cpt.tl.reference_control_cv(
         "Selamectin": "line == 'WT' and Drug_code == 'c_Selamectin'",
     },
     source_layer="raw", n_splits=3, random_state=7,
+    include_positive_gain=False,
+    robust_options={"anchor_queries": POSITIVES, "plate_shrinkage": True},  # optional
 )
 ```
+
+`robust_options` adds method `"robust"`. When a held-out condition is itself an
+anchor, it is dropped from the anchors for its own evaluation
+(leave-condition-out), so the positive rows test whether a plate center
+*transfers* to a condition that did not fit it. The reference row rewards
+fitting local, reference-specific shifts and favors per-plate WT centering by
+construction; give the positive rows more weight when the goal is correcting
+screening wells. `noise_floor_rms` is the dispersion expected from held-out
+well noise alone; no method can beat it on average. Scale options are ignored
+in the CV because all methods share one denominator.
 
 Each fold holds out wells within every plate/condition. Training alone determines
 all normalizer parameters. Three replicates permit two training wells and one
@@ -133,9 +200,12 @@ test well per fold. Missing reference groups or insufficient training counts
 raise errors. The helper operates on reference rows only for efficiency.
 
 Returns one row per fold/condition/method with `plate_dispersion_rms` and
-`mean_effect_rms`. Methods are `raw`, `wt_centered` and `wt_positive_gain`.
-All three use the **same baseline training SD** for evaluation, so changing the
-normalization denominator cannot manufacture improvement. Dispersion is RMS
+`mean_effect_rms`. With `include_positive_gain=False`, methods are `raw` and
+`wt_centered`; positive controls are evaluated but never fit the correction.
+The backward-compatible default, `include_positive_gain=True`, additionally fits
+and evaluates `wt_positive_gain`. All methods use the **same baseline training SD**
+for evaluation, so changing the normalization denominator cannot manufacture
+improvement. Dispersion is RMS
 variation of held-out plate means around their across-plate mean. Effect magnitude
 is the RMS across-feature mean effect relative to held-out WT references.
 Inspect both: compression can improve dispersion while reducing biological signal.
@@ -177,6 +247,23 @@ For D = mutant_DMSO - same_plate_WT_DMSO and P = mutant_drug - mutant_DMSO:
   to the disease vector.
 
 Results also contain group keys, replicate counts, feature count and disease norm.
+
+**Shared-control bias.** P and D share the mutant-DMSO centroid with opposite
+signs. Its sampling noise adds -tr(Cov_MT)/n_MT to P.D, so every inert drug gets
+R ~ tr(Cov_MT)/n_MT / ||D||^2 > 0. With unit noise per feature, n_MT = 3,
+1,000 features and ||D|| = 75, that spurious "rescue" is about 0.06, and it
+grows when the dispersed wells are noisier than the reference.
+`rescue_projection_debiased` and `remaining_distance_debiased` subtract the
+expected noise terms using same-plate within-group variances. `disease_snr` is
+the debiased ||D||^2 over its noise. Debiased scores are NaN when D is not above
+noise. Rank on the debiased columns and report `disease_snr`.
+
+**Identical layouts.** When every plate uses the same drug positions, position
+effects repeat on every plate. Agreement of a hit across genotypes is then not
+independent replication. The WT_CTRL plate can supply a positional null: score
+its dispersed WT wells as a pseudo-disease (e.g. relabel `line` on WT_CTRL
+non-reference wells as `"WT_null"`). Drugs that "rescue" this pseudo-disease
+vector reflect position or generic effects.
 If the norm is <= `min_disease_norm=1e-8`, scores are NaN and status is
 `disease_vector_too_small`. This is only a numerical guard; it does not establish
 biological separability. The scores have no p-values, confidence intervals or

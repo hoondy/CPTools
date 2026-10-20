@@ -59,8 +59,22 @@ when WT and mutant DMSO wells coexist. The separate
 `fit_reference_normalization` / `apply_reference_normalization` functions support
 held-out validation. See [full signatures, formulas and diagnostics](reference_normalization.md).
 
-Related analysis functions: `cpt.tl.reference_control_cv` and
-`cpt.tl.rescue_scores`, documented in the same guide.
+`cpt.pp.robust_reference_normalize(adata, *, reference_query, batch_key='Batch', source_layer='raw', output_layer='normalized', inplace=True, **fit_options)`
+
+Robust variant for few reference wells per plate
+(`fit_robust_reference_normalization`): plate offsets estimated jointly from
+the reference and optional `anchor_queries` (conditions repeated on every
+plate), shrunk by James-Stein toward the across-plate reference mean when they
+are not larger than their noise (including plate × condition interaction), and
+a choice of scale (`"reference"`, `"anchors"`, or `"replicate"`: within-group
+SD of replicate groups given by `scale_groupby`). The model is applied with
+`apply_reference_normalization`. Single-plate designs use
+`plate_shrinkage=False` with `scale="replicate"`.
+
+Related analysis functions: `cpt.tl.reference_control_cv` (pass
+`robust_options` to add the robust centering, evaluated leave-condition-out)
+and `cpt.tl.rescue_scores` (now with noise-debiased columns), documented in the
+same guide.
 
 ### `robust_zscore_norm`
 `cpt.pp.robust_zscore_norm(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', epsilon=1e-06, source_layer='raw', inplace=True)`
@@ -413,3 +427,36 @@ Generate treatment-vs-control volcano plot and boxplots including rescue groups.
 
 **Returns**
 - `pd.DataFrame`: Table of top hits (treatment vs control).
+
+---
+
+### Group geometry: `group_separation`, `profile_shift`, `feature_contrasts`
+
+Groups are named `obs.query` selections, e.g.
+`groups = {"WT_DMSO": "line == 'WT' and Treatment == 'DMSO'", ...}`.
+All three require a common finite feature set (`features=`) in a normalized
+layer. Squared distances and dot products are corrected for well-sampling
+noise (trace of each group's covariance / n).
+
+`cpt.tl.group_separation(adata, *, groups, pairs, layer='normalized', features=None, n_perm=2000, random_state=0)`
+
+One row per `(a, b)` pair and a `combined` row: debiased squared centroid
+distance per feature, signal-to-noise, permutation p-value (labels permuted
+within each pair), leave-one-well-out nearest-centroid accuracy, and transfer
+accuracy (centroids trained on the other pairs). Give pairs in a consistent
+orientation, e.g. `[("WT_untreated", "MUT_untreated"), ("WT_DMSO", "MUT_DMSO")]`.
+
+`cpt.tl.profile_shift(adata, *, groups, axis, shift, toward=None, layer='normalized', features=None, n_boot=2000, random_state=0)`
+
+Returns a Series with the debiased `projection` S·A/|A|² of the shift
+`S = shift[1] - shift[0]` on the axis `A = axis[1] - axis[0]`, its delta-method
+SE, t interval and `p_projection`, `cosine_debiased` (and plain `cosine`), shift
+and orthogonal lengths relative to |A|, `remaining_distance` to `toward`, and
+axis/shift SNR. Non-projection intervals are basic bootstrap intervals over
+wells. Prefer axis and shift groups that share no wells.
+
+`cpt.tl.feature_contrasts(adata, *, groups, contrasts, layer='normalized', features=None)`
+
+Per-feature Welch tests for `{name: (a, b)}` contrasts (b − a): difference,
+Cohen's d, t, p and BH q within each contrast, as a long table.
+

@@ -17,6 +17,7 @@ Cell Painting utilities for:
 - **Shared WT References**: `reference_normalize` separates WT reference wells from mutant vehicle controls, pools within-plate reference variability, and optionally calibrates positive-control gains.
 - **Robust References**: `robust_reference_normalize` estimates plate offsets from several shared anchors, shrinks them when they are not larger than their noise, and can scale by replicate residuals of all replicated groups.
 - **Bias-aware Geometry**: `group_separation`, `profile_shift` and `feature_contrasts` test genotype separation and treatment shifts along a phenotype axis, correcting distances and projections for well-sampling noise.
+- **Hit Calling with Nulls**: `replicate_map` scores replicate retrieval (copairs-style mAP) with label-shuffle p-values; `pseudo_treatment_null` turns random same-plate DMSO well groups into pseudo-drugs, so any score gets an empirical null via `empirical_pvalues`.
 - **Batch-Aware Statistics**: Normalization and treatment effects are calculated relative to matched controls in each batch.
 - **AnnData Compatibility**: Built directly on top of `AnnData` for seamless integration with `Scanpy`.
 - **High-Quality Visualization**: Interactive Plotly-based plots for exploratory analysis.
@@ -199,6 +200,27 @@ Individual filters follow the same rule:
   `cpt.pp.variance_filter(...)`, `cpt.pp.correlation_filter(...)`
 - default is annotation-only (`subset=False`)
 - pass `subset=True` to actually remove features
+
+## Hit calling and empirical nulls
+
+```python
+activity = cpt.tl.replicate_map(adata, treatment_key="Treatment", control_value="DMSO",
+                                batch_key="Batch", layer="normalized")
+null = cpt.tl.pseudo_treatment_null(adata, treatment_key="Treatment", control_value="DMSO",
+                                    batch_key="Batch", n_per_group=3, n_draws=1000)
+```
+
+`replicate_map` returns one row per treatment. Each well retrieves the
+treatment's other wells against the DMSO wells of its plate by cosine
+similarity, and the row reports the resulting mAP, a label-shuffle p-value
+(exact when the labelings can be enumerated) and a BH q-value. With
+`annotation_key="MOA"`, it scores MOA consistency instead. With triplicates
+and 8 DMSO wells per plate, the smallest possible p-value is 1/165.
+`pseudo_treatment_null` makes pseudo-drugs from DMSO triples on the same plate.
+Score them like real drugs, e.g. with `treatment_vectors` +
+`rank_treatment_correlations` or with `rescue_scores`, and compare the two sets
+with `empirical_pvalues`. The [API reference](docs/api.md#hit-calling-and-empirical-nulls-replicate_map-pseudo_treatment_null-empirical_pvalues)
+has worked examples for hit calling, connectivity ranking and rescue scores.
 
 ## Downstream Dimensionality Reduction / Clustering
 

@@ -236,8 +236,7 @@ variation of held-out plate means around their across-plate mean. Effect magnitu
 is the RMS across-feature mean effect relative to held-out WT references.
 Inspect both: compression can improve dispersion while reducing biological signal.
 Feature counts can differ between folds and are returned explicitly. These are
-descriptive metrics, not statistical significance tests. The notebook additionally
-fits one positive compound and holds the other entirely out of gain fitting.
+descriptive metrics, not statistical significance tests.
 
 ## Genotype-aware selection and rescue scoring
 

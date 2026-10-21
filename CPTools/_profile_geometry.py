@@ -52,14 +52,34 @@ def _moments(X, index):
     return means, noise
 
 
-def _shift_statistics(X, index, axis, shift, toward, debias=True):
+def _coefficients(spec, label):
+    """Weights {group: w} for a (start, end) pair or a weighted combination of groups."""
+    if isinstance(spec, Mapping):
+        weights = {str(g): float(w) for g, w in spec.items() if float(w) != 0}
+        if len(weights) < 2 or not all(np.isfinite(list(weights.values()))):
+            raise ValueError(f"{label} needs at least two groups with finite, nonzero weights.")
+        if abs(sum(weights.values())) > 1e-9:
+            raise ValueError(f"{label} weights must sum to 0 so the vector is a difference of centroids.")
+        return weights
+    if len(spec) != 2 or spec[0] == spec[1]:
+        raise ValueError(f"{label} must be two different group names or a {{group: weight}} mapping.")
+    return {spec[1]: 1.0, spec[0]: -1.0}
+
+
+def _describe(spec):
+    if not isinstance(spec, Mapping):
+        return f"{spec[0]} -> {spec[1]}"
+    terms = [f"{'-' if w < 0 else '+'} {abs(w):g}·{g}" for g, w in spec.items() if w]
+    return " ".join(terms).lstrip("+ ")
+
+
+def _shift_statistics(X, index, alpha, beta, path=None, debias=True):
+    """Debiased geometry of S = sum(alpha * centroids) on A = sum(beta * centroids)."""
     means, noise = _moments(X, index)
     if not debias:
         noise = dict.fromkeys(noise, 0.0)
-    beta = {axis[1]: 1.0, axis[0]: -1.0}
-    alpha = {shift[1]: 1.0, shift[0]: -1.0}
-    A = means[axis[1]] - means[axis[0]]
-    S = means[shift[1]] - means[shift[0]]
+    A = sum(w * means[g] for g, w in beta.items())
+    S = sum(w * means[g] for g, w in alpha.items())
     dot = float(S @ A)
     dot_ub = dot - sum(alpha.get(g, 0) * beta.get(g, 0) * noise[g] for g in index)
     axis_noise = sum(b * b * noise[g] for g, b in beta.items())
@@ -77,16 +97,18 @@ def _shift_statistics(X, index, axis, shift, toward, debias=True):
     }
     out["orthogonal_vs_axis_length"] = (
         np.sqrt(max(shift_sq - dot_ub**2 / axis_sq, 0) / axis_sq) if axis_sq > 0 else np.nan)
-    if toward is not None:
+    if path is not None:
+        start, end, toward = path
+
         def distance_sq(g, h):
             d = means[g] - means[h]
             return float(d @ d) - noise[g] - noise[h]
-        before, after = distance_sq(shift[0], toward), distance_sq(shift[1], toward)
+        before, after = distance_sq(start, toward), distance_sq(end, toward)
         out["remaining_distance"] = np.sqrt(max(after, 0) / before) if before > 0 else np.nan
     return out
 
 
-def _projection_inference(X, index, axis, shift, projection, axis_sq):
+def _projection_inference(X, index, alpha, beta, projection, axis_sq):
     """Delta-method SE and Welch-Satterthwaite df for the debiased projection.
 
     First order: each group's wells are projected on the gradient of S.A/|A|^2
@@ -96,10 +118,8 @@ def _projection_inference(X, index, axis, shift, projection, axis_sq):
     """
     means = {g: X[i].mean(axis=0) for g, i in index.items()}
     centered = {g: X[i] - means[g] for g, i in index.items()}
-    beta = {axis[1]: 1.0, axis[0]: -1.0}
-    alpha = {shift[1]: 1.0, shift[0]: -1.0}
-    A = means[axis[1]] - means[axis[0]]
-    S = means[shift[1]] - means[shift[0]]
+    A = sum(w * means[g] for g, w in beta.items())
+    S = sum(w * means[g] for g, w in alpha.items())
     used = [g for g in index if g in alpha or g in beta]
     first = {}
     for g in used:
@@ -126,8 +146,8 @@ def profile_shift(
     adata: ad.AnnData,
     *,
     groups: Mapping[str, str],
-    axis: tuple[str, str],
-    shift: tuple[str, str],
+    axis: tuple[str, str] | Mapping[str, float],
+    shift: tuple[str, str] | Mapping[str, float],
     toward: str | None = None,
     layer: str | None = "normalized",
     features: Sequence[str] | None = None,
@@ -138,7 +158,10 @@ def profile_shift(
 
     ``axis=(a0, a1)`` defines A = centroid(a1) - centroid(a0), e.g. WT ->
     mutant. ``shift=(s0, s1)`` defines S = centroid(s1) - centroid(s0), e.g.
-    mutant + vehicle -> mutant + drug. Returned (noise-debiased) values:
+    mutant + vehicle -> mutant + drug. Either can instead be a weighted
+    combination ``{group: weight}`` with weights summing to 0, e.g. a genotype
+    axis averaged over two vehicles, ``{"MUT_untreated": .5, "MUT_DMSO": .5,
+    "WT_untreated": -.5, "WT_DMSO": -.5}``. Returned (noise-debiased) values:
 
     - ``projection``: S.A / |A|^2. 1 = S travels the full axis length toward
       a1; negative values move toward a0 (e.g. rescue for an a1-side shift).
@@ -149,7 +172,8 @@ def profile_shift(
       vectors (``cosine`` is the plain, noise-attenuated value).
     - ``shift_vs_axis_length``, ``orthogonal_vs_axis_length``: |S| and its part
       orthogonal to A, in units of |A|.
-    - ``remaining_distance`` (with ``toward``): |s1 - toward| / |s0 - toward|.
+    - ``remaining_distance`` (with ``toward``; needs a ``(s0, s1)`` shift):
+      |s1 - toward| / |s0 - toward|.
     - ``axis_snr``/``shift_snr``: debiased squared length over its noise; values
       near or below 1 mean the vector is mostly sampling noise and the ratios
       above are unstable.
@@ -161,22 +185,26 @@ def profile_shift(
     replication. Prefer axis and shift groups that share no wells (e.g. axis
     from DMSO wells, shift from untreated wells); shared groups are debiased.
     """
-    if len(axis) != 2 or len(shift) != 2 or axis[0] == axis[1] or shift[0] == shift[1]:
-        raise ValueError("axis and shift must each be two different group names.")
-    if toward is not None and toward == shift[0]:
-        raise ValueError("toward must differ from the shift start group.")
-    names = [*axis, *shift] + ([toward] if toward is not None else [])
+    beta = _coefficients(axis, "axis")
+    alpha = _coefficients(shift, "shift")
+    path = None
+    if toward is not None:
+        if isinstance(shift, Mapping):
+            raise ValueError("toward needs a (start, end) shift, not a weighted combination.")
+        if toward == shift[0]:
+            raise ValueError("toward must differ from the shift start group.")
+        path = (shift[0], shift[1], toward)
+    names = [*beta, *alpha] + ([toward] if toward is not None else [])
     X, index = _prepare(adata, groups, names, layer, features)
-    observed = _shift_statistics(X, index, axis, shift, toward)
+    observed = _shift_statistics(X, index, alpha, beta, path)
     se = df = np.nan
     if np.isfinite(observed["projection"]):
         means, noise = _moments(X, index)
-        A = means[axis[1]] - means[axis[0]]
-        axis_sq = float(A @ A) - noise[axis[0]] - noise[axis[1]]
-        se, df = _projection_inference(X, index, axis, shift, observed["projection"], axis_sq)
+        A = sum(w * means[g] for g, w in beta.items())
+        axis_sq = float(A @ A) - sum(w * w * noise[g] for g, w in beta.items())
+        se, df = _projection_inference(X, index, alpha, beta, observed["projection"], axis_sq)
     result = {
-        "axis": f"{axis[0]} -> {axis[1]}", "shift": f"{shift[0]} -> {shift[1]}",
-        "toward": toward or "",
+        "axis": _describe(axis), "shift": _describe(shift), "toward": toward or "",
         **{f"n_{g}": len(i) for g, i in index.items()},
         "n_features": X.shape[1],
         **{k: v for k, v in observed.items() if k != "dot"},
@@ -187,14 +215,15 @@ def profile_shift(
     }
 
     rng = np.random.default_rng(random_state)
-    keys = ["cosine_debiased", "shift_vs_axis_length"] + (["remaining_distance"] if toward else [])
+    keys = ["cosine_debiased", "shift_vs_axis_length", "orthogonal_vs_axis_length"]
+    keys += ["remaining_distance"] if path is not None else []
     boot = {key: [] for key in keys}
     for _ in range(int(n_boot)):
         sample = {g: rng.choice(i, size=len(i), replace=True) for g, i in index.items()}
-        values = _shift_statistics(X, sample, axis, shift, toward)
+        values = _shift_statistics(X, sample, alpha, beta, path)
         for key in keys:
             boot[key].append(values[key])
-    plugin = _shift_statistics(X, index, axis, shift, toward, debias=False)
+    plugin = _shift_statistics(X, index, alpha, beta, path, debias=False)
     # Bootstrap spread of a mean of n wells is sqrt((n-1)/n) too small.
     n_min = min(len(i) for i in index.values())
     inflate = np.sqrt(n_min / (n_min - 1))
@@ -207,7 +236,7 @@ def profile_shift(
             low = observed[key] - inflate * (q_high - plugin[key])
             high = observed[key] - inflate * (q_low - plugin[key])
         result[f"{key}_ci_low"], result[f"{key}_ci_high"] = float(low), float(high)
-    return pd.Series(result, name=f"{shift[0]} -> {shift[1]} along {axis[0]} -> {axis[1]}")
+    return pd.Series(result, name=f"{_describe(shift)} along {_describe(axis)}")
 
 
 def _nearest_centroid_accuracy(X, train_a, train_b, test_a, test_b, leave_one_out=False):

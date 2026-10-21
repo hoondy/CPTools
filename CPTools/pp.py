@@ -497,12 +497,14 @@ def funnel(
     obs_nan_threshold: float | None = 0.2,
     variance_threshold: float | None = 1e-2,
     corr_threshold: float | None = 0.9,
-    snr_threshold: float | None = 0.8,
+    snr_threshold: float | None = 0.6,
     snr_keep_top_fraction: float | None = None,
     subset: bool = False,
     verbose: bool = True,
     inplace: bool = True,
     replicate_groupby: str | Sequence[str] | None = None,
+    snr_groups: str | Sequence[str] | None = None,
+    snr_key: str | None = None,
 ) -> ad.AnnData:
     """
     A series of filters and feature selections. Does not normalize the input.
@@ -514,6 +516,19 @@ def funnel(
     features in ``adata.var["highly_variable"]``.
 
     Set ``subset=True`` to physically subset features to the final selected set.
+
+    **SNR contrast.** The SNR step needs an explicit contrast: ``snr_groups``
+    lists the values of ``snr_key`` (default ``treatment_key``) whose wells
+    define signal (variance of their means) and noise (replicate variance);
+    all listed groups count as signal. For example
+    ``snr_key="line", snr_groups=["APOE3/3", "APOE4/4"]`` ranks features by the
+    genotype contrast. ``snr_groups="all"`` uses every condition with
+    ``control_value`` excluded from the signal (the original behavior, e.g. for
+    drug screens). Ranking by all conditions favors whatever dominates the
+    variance (often strong treatments), not the contrast you test.
+    ``snr_threshold`` is the fraction excluded from the bottom (0.6 keeps the
+    top 40%). Selecting and testing on the same wells inflates effect sizes
+    modestly; select on independent wells when the effect size is the result.
     """
     if variance_threshold is not None and not (0 <= variance_threshold <= 1):
         raise ValueError("variance_threshold must be in [0, 1] and is interpreted as a quantile.")
@@ -525,7 +540,7 @@ def funnel(
     if snr_keep_top_fraction is not None:
         if not (0 < snr_keep_top_fraction <= 1):
             raise ValueError("snr_keep_top_fraction must be in (0, 1].")
-        if snr_threshold not in (None, 0.8):
+        if snr_threshold not in (None, 0.6):
             raise ValueError(
                 "Pass only one of 'snr_threshold' or deprecated 'snr_keep_top_fraction'."
             )
@@ -539,6 +554,11 @@ def funnel(
 
     if snr_threshold is not None and not (0 <= snr_threshold <= 1):
         raise ValueError("snr_threshold must be in [0, 1].")
+    if snr_threshold is not None and snr_groups is None:
+        raise ValueError(
+            "The SNR step needs a contrast: pass snr_groups=[...] (values of snr_key, default "
+            "treatment_key), or snr_groups='all' for every condition, or snr_threshold=None to skip it."
+        )
 
     target = adata if inplace else adata.copy()
     source_matrix = _matrix_from_layer(target, source_layer=source_layer)
@@ -630,19 +650,35 @@ def funnel(
                 f"selected {working.n_vars} highly_variable features from {working.n_vars}"
             )
     else:
+        if isinstance(snr_groups, str) and snr_groups == "all":
+            snr_data, key, control, contrast_label = working, treatment_key, control_value, "all conditions"
+        else:
+            key = snr_key or treatment_key
+            if key not in working.obs:
+                raise KeyError(f"Missing snr_key column {key!r} in adata.obs")
+            wanted = [str(g) for g in ([snr_groups] if isinstance(snr_groups, str) else snr_groups)]
+            present = working.obs[key].astype(str)
+            missing = sorted(set(wanted) - set(present))
+            if missing or len(wanted) < 2:
+                raise ValueError(f"snr_groups needs >= 2 values present in {key!r}; missing: {missing}")
+            snr_data = working[present.isin(wanted).to_numpy()].copy()
+            control = "\0"   # every listed group contributes to the signal
+            contrast_label = f"{key} in {wanted}"
         snr_feature_selection(
-            working,
-            treatment_key=treatment_key,
-            control_value=control_value,
+            snr_data,
+            treatment_key=key,
+            control_value=control,
             quantile_threshold=snr_threshold,
             replicate_groupby=replicate_groupby,
             subset=False,
             inplace=True,
         )
+        for column in ["replicate_snr", "highly_variable", "highly_variable_rank"]:
+            working.var[column] = snr_data.var[column].to_numpy()
         if verbose:
             hv_in_working = int(working.var["highly_variable"].sum())
             print(
-                "[funnel] snr_feature_selection: selected "
+                f"[funnel] snr_feature_selection ({contrast_label}, {snr_data.n_obs} wells): selected "
                 f"{hv_in_working} highly_variable features from {working.n_vars}"
             )
 
@@ -690,6 +726,9 @@ def funnel(
         "variance_cutoff": variance_cutoff,
         "corr_threshold": corr_threshold,
         "snr_threshold": snr_threshold,
+        "snr_groups": ("" if snr_groups is None else snr_groups if isinstance(snr_groups, str)
+                       else [str(g) for g in snr_groups]),
+        "snr_key": snr_key or treatment_key,
         "subset": subset,
         "verbose": verbose,
         "replicate_groupby": ([replicate_groupby] if isinstance(replicate_groupby, str)

@@ -77,12 +77,13 @@ and `cpt.tl.rescue_scores` (now with noise-debiased columns), documented in the
 same guide.
 
 ### `robust_zscore_norm`
-`cpt.pp.robust_zscore_norm(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', epsilon=1e-06, source_layer='raw', inplace=True)`
+`cpt.pp.robust_zscore_norm(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', epsilon=1e-06, source_layer='raw', inplace=True, scale='batch', n_null=20, random_state=0)`
 
 Robust Z-score normalization per batch using control wells.
 
 **Formula**
-`X_norm = (X - median(controls)) / (MAD(controls) * 1.4826 + epsilon)`
+`X_norm = (X - median(controls in batch)) / scale`, where `scale` is
+`MAD(controls in batch) * 1.4826 + epsilon` for `scale='batch'` (default).
 
 **Parameters**
 
@@ -95,12 +96,16 @@ Robust Z-score normalization per batch using control wells.
 | `epsilon` | `float` | `1e-06` | Small constant to prevent division by zero. |
 | `source_layer` | `str \| None` | `'raw'` | Layer to use as input. If `None`, uses `adata.X`. |
 | `inplace` | `bool` | `True` | Whether to update the AnnData object in place. |
+| `scale` | `str` | `'batch'` | `'batch'`: per-batch control MAD (original behavior). `'pooled'`: one MAD per feature from all controls after per-batch median centering. `'shrunk'`: per-batch MADs shrunk toward the pooled MAD, keeping only between-batch differences larger than sampling noise. |
+| `n_null` | `int` | `20` | `scale='shrunk'` only: random reassignments of centered controls to batches used to measure sampling noise of the MAD. |
+| `random_state` | `int` | `0` | Seed for `n_null`. |
 
 **Returns**
 - `anndata.AnnData`: The normalized AnnData object.
 
 **Notes**
 - If a batch has no controls, a warning is issued and the raw values are kept for that batch.
+- With few controls per batch (e.g. 8), the per-batch MAD is noisy and is 0 when most control values tie; `'batch'` then divides by `epsilon` and warns. `'pooled'` and `'shrunk'` set features with pooled MAD <= `epsilon` to NaN and flag them in `var["pass_robust_zscore"]`; `'shrunk'` also writes `var["robust_zscore_scale_shrinkage"]` (0 = pooled scale, 1 = per-batch scale).
 - Normalization parameters are stored in `adata.uns["cptools"]["robust_zscore_norm"]`.
 
 ---
@@ -513,6 +518,20 @@ no wells; shared groups are debiased.
 
 Per-feature Welch tests for `{name: (a, b)}` contrasts (b − a): difference,
 Cohen's d, t, p and BH q within each contrast, as a long table.
+
+`cpt.tl.replicate_outliers(adata, *, groupby, layer='normalized', features=None, threshold=3.5)`
+
+Flags wells whose profile is far from the other wells of their condition. For
+each well, `distance` is the RMS over features of its difference from the mean
+of the *other* wells in its `groupby` group (SD units in a noise-scaled layer).
+`relative_distance` divides it by the group's median distance, so a condition
+whose wells all vary more is not flagged as a whole. `robust_z` is
+log(`relative_distance`) over 1.4826 × its MAD pooled across all groups, and
+wells with `robust_z > threshold` are flagged. The MAD is pooled because one
+from a handful of wells is too unstable: a within-group z flags a clean well on
+many plates. Groups with fewer than three wells get NaN. Returns one row per
+well, indexed like `adata.obs`. A flag means "inspect the images", not
+"remove".
 
 ---
 

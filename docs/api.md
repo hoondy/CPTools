@@ -497,8 +497,17 @@ Returns a Series with the debiased `projection` S·A/|A|² of the shift
 `S = shift[1] - shift[0]` on the axis `A = axis[1] - axis[0]`, its delta-method
 SE, t interval and `p_projection`, `cosine_debiased` (and plain `cosine`), shift
 and orthogonal lengths relative to |A|, `remaining_distance` to `toward`, and
-axis/shift SNR. Non-projection intervals are basic bootstrap intervals over
-wells. Prefer axis and shift groups that share no wells.
+axis/shift SNR. Non-projection intervals, including the orthogonal length, are
+basic bootstrap intervals over wells. Prefer axis and shift groups that share
+no wells; shared groups are debiased.
+
+`axis` and `shift` also accept a weighted combination of groups,
+`{group: weight}` with weights summing to 0. Examples:
+- a genotype axis averaged over vehicles:
+  `{"MUT_untreated": .5, "MUT_DMSO": .5, "WT_untreated": -.5, "WT_DMSO": -.5}`;
+- a pathway contrast built from an agonist and an antagonist response.
+
+`toward` requires a `(start, end)` shift.
 
 `cpt.tl.feature_contrasts(adata, *, groups, contrasts, layer='normalized', features=None)`
 

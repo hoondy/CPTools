@@ -177,18 +177,12 @@ in `var["pass_reference_normalization"]` and set to NaN. Keep `layers["raw"]`
 as the input to repeated fits. Positive-control calibration is optional and should
 be evaluated with held-out controls before use.
 
-See the [method and API guide](docs/reference_normalization.md) and the runnable
-[iGLUT notebook](output/jupyter-notebook/iglut_reference_normalization.ipynb)
-([percent-format Python](output/jupyter-notebook/iglut_reference_normalization.py)).
-The notebook loads the user's H5AD locally/on HPC; it contains no experimental results.
+See the [method and API guide](docs/reference_normalization.md).
 
 For few references per plate, compare `cpt.pp.robust_reference_normalize`
 (multi-anchor plate offsets with James-Stein shrinkage and an optional
 replicate-residual scale) using `reference_control_cv(..., robust_options=...)`.
 `rescue_scores` also reports noise-debiased projections; see the guide.
-
-For development, install `python -m pip install -e '.[test,notebook]'` and run
-`python -m pytest -q`.
 
 To subset features physically, opt in with:
 

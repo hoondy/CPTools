@@ -306,7 +306,9 @@ Apply control-based regularized ZCA whitening.
 ---
 
 ### `funnel`
-`cpt.pp.funnel(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', source_layer=None, obs_nan_threshold=0.2, variance_threshold=0.01, corr_threshold=0.9, snr_threshold=0.8, snr_keep_top_fraction=None, subset=False, verbose=True, inplace=True, replicate_groupby=None)`
+`cpt.pp.funnel(adata, batch_key='Batch', treatment_key='Treatment', control_value='DMSO', source_layer=None, obs_nan_threshold=0.2, variance_threshold=0.01, corr_threshold=0.9, snr_threshold=0.6, snr_keep_top_fraction=None, subset=False, verbose=True, inplace=True, replicate_groupby=None, snr_groups=None, snr_key=None)`
+
+The SNR step requires a contrast. `snr_groups` lists the values of `snr_key` (default `treatment_key`) whose wells define the SNR, and all of them count as signal. For example, `snr_key="line", snr_groups=["WT", "MUT"]` ranks features by a genotype contrast; restrict the wells first if needed, e.g. controls only. `snr_groups="all"` uses every condition with `control_value` excluded from the signal, the previous default. With `snr_threshold` set and no `snr_groups`, `funnel` raises. Ranking by all conditions favors whatever dominates the variance, often strong treatments, rather than the contrast being tested. `snr_threshold` is the fraction excluded from the bottom; the default 0.6 keeps the top 40%.
 
 Does not normalize or whiten. `replicate_groupby` is forwarded to SNR selection.
 
@@ -336,7 +338,9 @@ specific layer without replacing `adata.X`.
 | `obs_nan_threshold` | `float \| None` | `0.2` | Drop observations with non-finite fraction above this threshold before feature-level NaN filtering; `None` skips observation filtering. |
 | `variance_threshold` | `float \| None` | `0.01` | Interpreted as a variance quantile to drop; `None` skips `variance_filter`. |
 | `corr_threshold` | `float \| None` | `0.9` | Correlation threshold for `correlation_filter`; `None` skips `correlation_filter`. |
-| `snr_threshold` | `float \| None` | `0.8` | SNR quantile threshold (fraction to exclude from bottom); `None` skips `snr_feature_selection`. |
+| `snr_threshold` | `float \| None` | `0.6` | SNR quantile threshold (fraction to exclude from bottom); `None` skips `snr_feature_selection`. |
+| `snr_groups` | `str \| Sequence[str] \| None` | `None` | Required when `snr_threshold` is set: values of `snr_key` defining the SNR contrast, or `"all"`. |
+| `snr_key` | `str \| None` | `None` | Column whose values `snr_groups` refers to; defaults to `treatment_key`. |
 | `snr_keep_top_fraction` | `float \| None` | `None` | **Deprecated** alias for `1 - snr_threshold`. |
 | `subset` | `bool` | `False` | If `True`, physically subsets to highly variable features. |
 | `verbose` | `bool` | `True` | Whether to print progress and counts. |

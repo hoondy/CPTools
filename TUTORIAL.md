@@ -70,7 +70,8 @@ adata = cpt.pp.funnel(
     source_layer=None,      # use current adata.X; use "normalized" to read that layer
     obs_nan_threshold=0.2,  # drop observations with >20% non-finite features
     variance_threshold=0.01,  # drop bottom 1% by variance
-    snr_threshold=0.8,        # exclude bottom 80% by SNR
+    snr_threshold=0.6,        # exclude bottom 60% by SNR
+    snr_groups="all",        # SNR contrast (required when SNR is on)
     verbose=True,  # prints per-step filtered/selected feature counts
 )
 ```
@@ -200,7 +201,8 @@ adata = cpt.pp.funnel(
     treatment_key="Treatment",
     control_value="DMSO",
     variance_threshold=0.01,
-    snr_threshold=0.8,
+    snr_threshold=0.6,
+    snr_groups="all",
     subset=False,  # default: keep all features, mark highly_variable
     verbose=True,
 )

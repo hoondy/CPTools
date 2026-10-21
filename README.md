@@ -120,7 +120,8 @@ cpt.pp.funnel(
     obs_nan_threshold=0.2,  # drop observations with >20% non-finite features
     variance_threshold=0.01,  # drop bottom 1% by variance
     corr_threshold=0.9,
-    snr_threshold=0.8,  # exclude bottom 80% by SNR
+    snr_threshold=0.6,  # exclude bottom 60% by SNR
+    snr_groups="all",  # SNR contrast: every condition; or e.g. snr_key="line", snr_groups=["WT", "MUT"]
     verbose=True,  # prints per-step filtered/selected feature counts
 )
 ```

@@ -81,6 +81,31 @@ def _apply_obs_mask(adata: ad.AnnData, mask: np.ndarray, inplace: bool) -> ad.An
     return adata[mask, :].copy()
 
 
+def _scale_shrinkage(centered, sizes, observed_log, pooled_log, n_null, rng):
+    """Per-feature factor in [0, 1] keeping between-batch log-MAD spread beyond sampling noise.
+
+    The noise level is the spread of log-MADs when the batch-centered controls
+    are reassigned to batches at random (same batch sizes).
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        spread = np.nanmean((observed_log - pooled_log) ** 2, axis=0)
+        null = []
+        for _ in range(int(n_null)):
+            shuffled = centered[rng.permutation(len(centered))]
+            bounds = np.cumsum([0, *sizes])
+            mads = np.vstack([
+                median_abs_deviation(shuffled[a:b], axis=0, scale="normal", nan_policy="omit")
+                for a, b in zip(bounds[:-1], bounds[1:])
+            ])
+            logs = np.log(np.where(mads > 0, mads, np.nan))
+            # Shuffling keeps the pooled set, so both spreads use the same center.
+            null.append(np.nanmean((logs - pooled_log) ** 2, axis=0))
+        noise = np.nanmean(null, axis=0)
+        factor = np.clip(1 - noise / spread, 0, 1)
+    return np.where(np.isfinite(factor), factor, 0.0)
+
+
 def robust_zscore_norm(
     adata: ad.AnnData,
     batch_key: str = "Batch",
@@ -89,17 +114,39 @@ def robust_zscore_norm(
     epsilon: float = 1e-6,
     source_layer: str | None = "raw",
     inplace: bool = True,
+    scale: str = "batch",
+    n_null: int = 20,
+    random_state: int = 0,
 ) -> ad.AnnData:
     """
     Robust Z-score normalization per batch using control wells.
 
     Formula:
-        (X - median(controls)) / (MAD(controls) * 1.4826 + epsilon)
+        (X - median(controls in batch)) / scale
+
+    ``scale`` chooses the denominator (MAD includes the 1.4826 normal factor):
+
+    - ``"batch"`` (default, unchanged behavior): MAD of the batch's controls
+      plus ``epsilon``. With few controls this MAD is noisy (about 40%
+      relative error for 8 wells) and is 0 when most control values tie, in
+      which case other wells are divided by ``epsilon``.
+    - ``"pooled"``: one MAD per feature from all controls after per-batch
+      median centering (n = all control wells).
+    - ``"shrunk"``: per-batch log-MADs shrunk toward the pooled log-MAD,
+      keeping only the between-batch spread that exceeds sampling noise (the
+      spread seen when centered controls are reassigned to batches at random,
+      ``n_null`` times). Batches with MAD = 0 use the pooled MAD.
+
+    With ``"pooled"``/``"shrunk"``, features whose pooled MAD <= ``epsilon``
+    become NaN and ``var["pass_robust_zscore"]`` is False; nothing is divided
+    by ``epsilon``.
     """
     if batch_key not in adata.obs.columns:
         raise KeyError(f"Missing '{batch_key}' in adata.obs")
     if treatment_key not in adata.obs.columns:
         raise KeyError(f"Missing '{treatment_key}' in adata.obs")
+    if scale not in {"batch", "pooled", "shrunk"}:
+        raise ValueError("scale must be 'batch', 'pooled' or 'shrunk'.")
 
     target = adata if inplace else adata.copy()
     X = _matrix_from_layer(target, source_layer=source_layer)
@@ -108,6 +155,7 @@ def robust_zscore_norm(
     batch_values = target.obs[batch_key].astype(str)
     treatment_values = target.obs[treatment_key].astype(str)
     n_zero_mad = 0
+    fitted = []  # (batch mask, control median, control MAD, centered controls)
 
     for batch in pd.unique(batch_values):
         batch_mask = batch_values == batch
@@ -121,23 +169,53 @@ def robust_zscore_norm(
             continue
 
         controls = X[control_mask.to_numpy(), :]
-        current = X[batch_mask.to_numpy(), :]
-
         med = np.nanmedian(controls, axis=0)
         mad = median_abs_deviation(controls, axis=0, scale="normal", nan_policy="omit")
         n_zero_mad += int(np.sum(mad <= epsilon))
-        transformed = (current - med) / (mad + epsilon)
-        X_norm[batch_mask.to_numpy(), :] = transformed.astype(np.float32, copy=False)
+        fitted.append((batch_mask.to_numpy(), med, mad, controls - med))
 
-    if n_zero_mad:
-        # Tied control values (common with few controls or discrete features)
-        # give MAD=0, so non-tied wells are divided by epsilon (|z| ~ 1/epsilon).
-        warnings.warn(
-            f"{n_zero_mad} batch x feature control MADs are <= epsilon; those values are divided "
-            f"by ~epsilon={epsilon} and can reach |z| ~ {1 / epsilon:.0e}. Filter such features "
-            "or use a pooled scale (reference_normalize / robust_reference_normalize).",
-            stacklevel=2,
-        )
+    valid = np.ones(X.shape[1], dtype=bool)
+    shrinkage = None
+    if scale == "batch":
+        for batch_mask, med, mad, _ in fitted:
+            X_norm[batch_mask, :] = ((X[batch_mask, :] - med) / (mad + epsilon)).astype(np.float32, copy=False)
+        if n_zero_mad:
+            # Tied control values (common with few controls or discrete features)
+            # give MAD=0, so non-tied wells are divided by epsilon (|z| ~ 1/epsilon).
+            warnings.warn(
+                f"{n_zero_mad} batch x feature control MADs are <= epsilon; those values are divided "
+                f"by ~epsilon={epsilon} and can reach |z| ~ {1 / epsilon:.0e}. Filter such features "
+                "or use scale='pooled'/'shrunk' (or reference_normalize).",
+                stacklevel=2,
+            )
+    elif fitted:
+        centered = np.vstack([c for *_, c in fitted])
+        pooled = median_abs_deviation(centered, axis=0, scale="normal", nan_policy="omit")
+        valid = np.isfinite(pooled) & (pooled > epsilon)
+        per_batch = np.vstack([mad for _, _, mad, _ in fitted])
+        if scale == "shrunk":
+            with np.errstate(divide="ignore", invalid="ignore"):
+                observed_log = np.log(np.where(per_batch > epsilon, per_batch, np.nan))
+                pooled_log = np.log(np.where(valid, pooled, np.nan))
+            shrinkage = _scale_shrinkage(centered, [len(c) for *_, c in fitted], observed_log,
+                                         pooled_log, n_null, np.random.default_rng(random_state))
+            scales = np.exp(pooled_log + shrinkage * (observed_log - pooled_log))
+            scales = np.where(np.isfinite(scales), scales, pooled)
+        else:
+            scales = np.broadcast_to(pooled, per_batch.shape)
+        for (batch_mask, med, _, _), batch_scale in zip(fitted, scales):
+            out = np.full((int(batch_mask.sum()), X.shape[1]), np.nan, dtype=np.float32)
+            out[:, valid] = ((X[batch_mask][:, valid] - med[valid]) / batch_scale[valid]).astype(np.float32)
+            X_norm[batch_mask, :] = out
+        target.var["pass_robust_zscore"] = valid
+        if shrinkage is not None:
+            target.var["robust_zscore_scale_shrinkage"] = shrinkage.astype(np.float32)
+        if not valid.all():
+            warnings.warn(
+                f"{int((~valid).sum())} features have pooled control MAD <= epsilon; they are set to NaN "
+                "and flagged in var['pass_robust_zscore'].",
+                stacklevel=2,
+            )
 
     if source_layer is None and "raw" not in target.layers:
         target.layers["raw"] = np.array(X, copy=True)
@@ -150,6 +228,8 @@ def robust_zscore_norm(
         "control_value": control_value,
         "epsilon": epsilon,
         "source_layer": source_layer,
+        "scale": scale,
+        "n_zero_batch_mad": n_zero_mad,
     }
     return target
 

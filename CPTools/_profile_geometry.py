@@ -239,6 +239,57 @@ def profile_shift(
     return pd.Series(result, name=f"{_describe(shift)} along {_describe(axis)}")
 
 
+def replicate_outliers(
+    adata: ad.AnnData,
+    *,
+    groupby: str,
+    layer: str | None = "normalized",
+    features: Sequence[str] | None = None,
+    threshold: float = 3.5,
+) -> pd.DataFrame:
+    """Flag wells whose profile is far from the other wells of their condition.
+
+    For each well, ``distance`` is the RMS over features of its difference from
+    the mean of the *other* wells in its ``groupby`` group (layer units; SD units
+    for a noise-scaled layer). ``relative_distance`` divides it by the median
+    distance of its group, so a group whose wells all vary more is not flagged
+    as a whole. ``robust_z`` is log(relative_distance) over 1.4826 x the MAD of
+    that log ratio pooled across all groups; wells with ``robust_z > threshold``
+    are flagged. Pooling matters with few wells: a MAD from six wells is so
+    unstable that a within-group z flags a clean well on many plates. Groups
+    with fewer than three wells get NaN.
+
+    A flag means "inspect the images", not "remove". Returns one row per well
+    (indexed like ``adata.obs``).
+    """
+    if groupby not in adata.obs:
+        raise KeyError(f"Missing {groupby!r} in obs.")
+    data = adata if features is None else adata[:, list(features)]
+    if data.n_vars == 0:
+        raise ValueError("Select at least one feature.")
+    X = _source(data, layer)
+    if not np.isfinite(X).all():
+        raise ValueError("Profiles contain nonfinite values; select a common finite feature set first.")
+    labels = data.obs[groupby].astype(str).to_numpy()
+    distance = np.full(data.n_obs, np.nan)
+    for group in np.unique(labels):
+        idx = np.flatnonzero(labels == group)
+        if len(idx) < 3:
+            continue
+        total = X[idx].sum(axis=0)
+        for i in idx:
+            others = (total - X[i]) / (len(idx) - 1)
+            distance[i] = np.sqrt(np.mean((X[i] - others) ** 2))
+    frame = pd.DataFrame({"group": labels, "distance": distance}, index=data.obs_names)
+    median = frame.groupby("group")["distance"].transform("median")
+    frame["relative_distance"] = frame["distance"] / median.where(median > 0)
+    log_ratio = np.log(frame["relative_distance"])
+    mad = 1.4826 * np.nanmedian(np.abs(log_ratio - np.nanmedian(log_ratio))) if log_ratio.notna().any() else np.nan
+    frame["robust_z"] = log_ratio / mad if mad > 0 else np.nan
+    frame["outlier"] = frame["robust_z"] > threshold
+    return frame
+
+
 def _nearest_centroid_accuracy(X, train_a, train_b, test_a, test_b, leave_one_out=False):
     correct = []
     for label, test in ((0, test_a), (1, test_b)):

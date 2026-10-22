@@ -196,6 +196,17 @@ def profile_shift(
         path = (shift[0], shift[1], toward)
     names = [*beta, *alpha] + ([toward] if toward is not None else [])
     X, index = _prepare(adata, groups, names, layer, features)
+    result = {
+        "axis": _describe(axis), "shift": _describe(shift), "toward": toward or "",
+        **{f"n_{g}": len(i) for g, i in index.items()},
+        "n_features": X.shape[1],
+        **_shift_row(X, index, alpha, beta, path, n_boot, np.random.default_rng(random_state)),
+    }
+    return pd.Series(result, name=f"{_describe(shift)} along {_describe(axis)}")
+
+
+def _shift_row(X, index, alpha, beta, path, n_boot, rng):
+    """Debiased statistics, projection inference and bootstrap intervals of one shift."""
     observed = _shift_statistics(X, index, alpha, beta, path)
     se = df = np.nan
     if np.isfinite(observed["projection"]):
@@ -204,9 +215,6 @@ def profile_shift(
         axis_sq = float(A @ A) - sum(w * w * noise[g] for g, w in beta.items())
         se, df = _projection_inference(X, index, alpha, beta, observed["projection"], axis_sq)
     result = {
-        "axis": _describe(axis), "shift": _describe(shift), "toward": toward or "",
-        **{f"n_{g}": len(i) for g, i in index.items()},
-        "n_features": X.shape[1],
         **{k: v for k, v in observed.items() if k != "dot"},
         "projection_se": se, "projection_df": df,
         "projection_ci_low": observed["projection"] - stats.t.ppf(0.975, df) * se,
@@ -214,7 +222,6 @@ def profile_shift(
         "p_projection": float(2 * stats.t.sf(abs(observed["projection"]) / se, df)) if se > 0 else np.nan,
     }
 
-    rng = np.random.default_rng(random_state)
     keys = ["cosine_debiased", "shift_vs_axis_length", "orthogonal_vs_axis_length"]
     keys += ["remaining_distance"] if path is not None else []
     boot = {key: [] for key in keys}
@@ -236,7 +243,74 @@ def profile_shift(
             low = observed[key] - inflate * (q_high - plugin[key])
             high = observed[key] - inflate * (q_low - plugin[key])
         result[f"{key}_ci_low"], result[f"{key}_ci_high"] = float(low), float(high)
-    return pd.Series(result, name=f"{_describe(shift)} along {_describe(axis)}")
+    return result
+
+
+def profile_shift_screen(
+    adata: ad.AnnData,
+    *,
+    groups: Mapping[str, str],
+    axis: tuple[str, str] | Mapping[str, float],
+    shifts: Mapping[str, tuple[str, str] | Mapping[str, float]],
+    toward: str | None = None,
+    layer: str | None = "normalized",
+    features: Sequence[str] | None = None,
+    n_boot: int = 0,
+    random_state: int = 0,
+) -> pd.DataFrame:
+    """Measure many shifts on one axis, e.g. every compound of a screen.
+
+    Each value of ``shifts`` is a ``(start, end)`` pair or a ``{group: weight}``
+    combination, as in ``profile_shift``, and gets the same statistics. Shifts
+    typically share a baseline group (the vehicle) and may share groups with
+    the axis; the debiasing handles both. Contrasts between shifts are shifts
+    too, e.g. a drug's response in a mutant minus its response in WT:
+    ``{"MUT_drug": 1, "MUT_DMSO": -1, "WT_drug": -1, "WT_DMSO": 1}``.
+
+    ``toward`` adds ``remaining_distance`` for ``(start, end)`` shifts; weighted
+    shifts get NaN. ``q_projection`` is the Benjamini-Hochberg q-value of
+    ``p_projection`` across the shifts of this call, so call once per family
+    (e.g. per genotype). Projection intervals are analytic; ``n_boot > 0``
+    adds bootstrap intervals for the other metrics at n_boot x shifts cost.
+
+    Returns one row per shift, indexed by its name, with ``min_group_wells``
+    (the smallest group the shift uses) instead of per-group counts.
+    """
+    if not shifts:
+        raise ValueError("Provide at least one shift.")
+    beta = _coefficients(axis, "axis")
+    alphas = {str(name): _coefficients(spec, f"shift {name!r}") for name, spec in shifts.items()}
+    paths = {}
+    if toward is not None:
+        for name, spec in shifts.items():
+            if isinstance(spec, Mapping):
+                continue
+            if toward == spec[0]:
+                raise ValueError(f"toward must differ from the start group of shift {name!r}.")
+            paths[str(name)] = (spec[0], spec[1], toward)
+    names = [*beta, *(g for alpha in alphas.values() for g in alpha)] + ([toward] if toward is not None else [])
+    X, index = _prepare(adata, groups, names, layer, features)
+    rng = np.random.default_rng(random_state)
+    rows = {}
+    for (name, alpha), spec in zip(alphas.items(), shifts.values()):
+        path = paths.get(name)
+        used = {*beta, *alpha, *([toward] if path is not None else [])}
+        subset = {g: i for g, i in index.items() if g in used}
+        rows[name] = {
+            "axis": _describe(axis), "shift": _describe(spec), "toward": toward if path is not None else "",
+            "n_features": X.shape[1], "min_group_wells": min(len(index[g]) for g in alpha),
+            **_shift_row(X, subset, alpha, beta, path, n_boot, rng),
+        }
+        if toward is not None and path is None:
+            rows[name]["remaining_distance"] = np.nan
+    table = pd.DataFrame.from_dict(rows, orient="index")
+    table.index.name = "name"
+    p = table["p_projection"].to_numpy(dtype=float)
+    q = np.full(len(p), np.nan)
+    finite = np.isfinite(p)
+    q[finite] = bh_fdr(p[finite])
+    table["q_projection"] = q
+    return table
 
 
 def replicate_outliers(

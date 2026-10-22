@@ -514,6 +514,32 @@ no wells; shared groups are debiased.
 
 `toward` requires a `(start, end)` shift.
 
+`cpt.tl.profile_shift_screen(adata, *, groups, axis, shifts, toward=None, layer='normalized', features=None, n_boot=0, random_state=0)`
+
+`profile_shift` for many shifts on one axis, e.g. every compound of a screen
+on a disease axis. `shifts` maps names to `(start, end)` pairs or weighted
+combinations; shifts may share the vehicle group with each other and with the
+axis. Returns one row per shift (indexed by name) with the `profile_shift`
+statistics, `min_group_wells` and `q_projection`, the Benjamini–Hochberg
+q-value across the shifts of the call. `toward` adds `remaining_distance` for
+`(start, end)` shifts. Projection intervals are analytic; `n_boot > 0` adds
+bootstrap intervals for the other metrics.
+
+A treatment's response in one genotype minus its response in another is a
+weighted shift. With identical plate layouts, it cancels effects shared by
+both genotypes, such as generic drug effects or effects of the drug's well
+positions:
+
+```python
+groups = {"MUT_DMSO": ..., "WT_DMSO": ..., "MUT_cells": ..., "WT_cells": ...,
+          **{f"MUT_{d}": ... for d in drugs}, **{f"WT_{d}": ... for d in drugs}}
+axis = {"WT_DMSO": .5, "WT_cells": .5, "MUT_DMSO": -.5, "MUT_cells": -.5}   # MUT -> WT
+toward_wt = cpt.tl.profile_shift_screen(adata, groups=groups, axis=axis, toward="WT_DMSO",
+                                        shifts={d: ("MUT_DMSO", f"MUT_{d}") for d in drugs})
+specific = cpt.tl.profile_shift_screen(adata, groups=groups, axis=axis, shifts={
+    d: {f"MUT_{d}": 1, "MUT_DMSO": -1, f"WT_{d}": -1, "WT_DMSO": 1} for d in drugs})
+```
+
 `cpt.tl.feature_contrasts(adata, *, groups, contrasts, layer='normalized', features=None)`
 
 Per-feature Welch tests for `{name: (a, b)}` contrasts (b − a): difference,

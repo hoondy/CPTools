@@ -540,6 +540,23 @@ specific = cpt.tl.profile_shift_screen(adata, groups=groups, axis=axis, shifts={
     d: {f"MUT_{d}": 1, "MUT_DMSO": -1, f"WT_{d}": -1, "WT_DMSO": 1} for d in drugs})
 ```
 
+`cpt.tl.axis_pca(adata, *, groups, axis, origin=None, layer='normalized', features=None, fit_query=None, n_comps=2)`
+
+A PCA whose first coordinate is fixed to an axis. `axis` is the column of the
+projection, (x − origin)·A/|A|² (0 at the origin group, 1 at the end of the
+axis). `orthogonal_1`, `orthogonal_2`, … project what is left on the main
+directions of the residuals of the `fit_query` wells, also in units of |A|.
+Residual directions are taken around the origin, so the origin stays at 0.
+Returns one row per well; `attrs["variance_fraction"]` gives the share of the
+fit wells' squared distance from the origin along the axis and along each
+orthogonal direction.
+
+```python
+emb = cpt.tl.axis_pca(adata, groups=groups, axis=("MUT_DMSO", "WT_DMSO"),
+                      fit_query="line == 'MUT' and role == 'compound'")
+# plot emb["axis"] against emb["orthogonal_1"]: MUT_DMSO at (0, 0), WT_DMSO at (1, 0)
+```
+
 `cpt.tl.feature_contrasts(adata, *, groups, contrasts, layer='normalized', features=None)`
 
 Per-feature Welch tests for `{name: (a, b)}` contrasts (b − a): difference,

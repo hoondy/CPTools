@@ -313,6 +313,78 @@ def profile_shift_screen(
     return table
 
 
+def axis_pca(
+    adata: ad.AnnData,
+    *,
+    groups: Mapping[str, str],
+    axis: tuple[str, str] | Mapping[str, float],
+    origin: str | None = None,
+    layer: str | None = "normalized",
+    features: Sequence[str] | None = None,
+    fit_query: str | None = None,
+    n_comps: int = 2,
+) -> pd.DataFrame:
+    """Coordinates along an axis and along the main directions orthogonal to it.
+
+    A PCA whose first coordinate is fixed to an axis, e.g. WT -> mutant.
+    ``axis`` is a ``(start, end)`` pair or a ``{group: weight}`` combination
+    as in ``profile_shift``; ``origin`` (default: the start group of a pair)
+    is placed at 0. For each well x, with A the axis vector and o the origin
+    centroid:
+
+    - ``axis`` = (x - o).A / |A|^2: 0 at the origin, 1 at the end of the axis;
+    - ``orthogonal_k``: the residual (x - o) minus its axis part, projected on
+      the k-th principal direction of the residuals of the ``fit_query``
+      wells (all wells by default), divided by |A|.
+
+    All coordinates share the axis-length unit, so a plot of ``axis`` against
+    ``orthogonal_1`` keeps distances comparable. Residual directions are taken
+    around the origin, not around the residual mean, so the origin stays at
+    0 on every coordinate; each direction is signed so that the fit wells
+    have a non-negative mean. ``attrs["variance_fraction"]`` gives the share
+    of the fit wells' squared distance from the origin along the axis and
+    along each orthogonal direction; ``attrs["axis_length"]`` is |A|.
+
+    Centroids carry well noise; with few wells per group, the axis direction
+    is approximate. Returns one row per well, indexed like ``adata.obs``.
+    """
+    beta = _coefficients(axis, "axis")
+    if origin is None:
+        if isinstance(axis, Mapping):
+            raise ValueError("origin is required when axis is a weighted combination.")
+        origin = axis[0]
+    if not isinstance(n_comps, (int, np.integer)) or n_comps < 1:
+        raise ValueError("n_comps must be a positive integer.")
+    X, index = _prepare(adata, groups, [*beta, origin], layer, features)
+    if not np.isfinite(X).all():
+        raise ValueError("Profiles contain nonfinite values; select a common finite feature set first.")
+    means = {g: X[i].mean(axis=0) for g, i in index.items()}
+    A = sum(w * means[g] for g, w in beta.items())
+    length = float(np.linalg.norm(A))
+    if length == 0:
+        raise ValueError("The axis has zero length.")
+    Z = X - means[origin]
+    along = Z @ A / length**2
+    residual = Z - np.outer(along, A)
+    fit = np.ones(adata.n_obs, dtype=bool) if fit_query is None else _query_mask(adata.obs, fit_query)
+    if fit.sum() < 2:
+        raise ValueError("fit_query selects fewer than 2 wells.")
+    _, singular, directions = np.linalg.svd(residual[fit], full_matrices=False)
+    n_comps = min(int(n_comps), len(singular))
+    coords = residual @ directions[:n_comps].T
+    flip = np.where(coords[fit].mean(axis=0) < 0, -1.0, 1.0)
+    coords = coords * flip / length
+    total = float(np.sum(Z[fit] ** 2))
+    table = pd.DataFrame(np.column_stack([along, coords]), index=adata.obs_names,
+                         columns=["axis", *[f"orthogonal_{k + 1}" for k in range(n_comps)]])
+    table.attrs["axis_length"] = length
+    table.attrs["variance_fraction"] = {
+        "axis": float(np.sum((along[fit] * length) ** 2) / total) if total > 0 else np.nan,
+        **{f"orthogonal_{k + 1}": float(singular[k] ** 2 / total) if total > 0 else np.nan for k in range(n_comps)},
+    }
+    return table
+
+
 def replicate_outliers(
     adata: ad.AnnData,
     *,

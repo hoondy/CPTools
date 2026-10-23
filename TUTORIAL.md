@@ -20,11 +20,11 @@ Use CPTools I/O to load feature matrix + metadata directly into an `AnnData` obj
 ```python
 res_list = ["./data/01A/PlateResults.txt", "./data/01B/PlateResults.txt"]
 batch_list = ["01A", "01B"]
-schema_path = "./data/Schema_MCE_master_v2.csv"
+metadata_path = "./data/plate_metadata.csv"
 
 adata = cpt.io.read_harmony(
     plate_results_path=res_list,
-    schema=schema_path,
+    schema=metadata_path,
     batch=batch_list,
 )
 adata
@@ -36,6 +36,9 @@ Required metadata columns:
 - `Column`
 - `Treatment` (required for normalization/selection/Drug effect visualization)
 - optional: `MOA`, `PathWay`, `Research_Area`, etc.
+
+The [metadata guide](docs/metadata.md) describes the recommended columns and
+how to encode control roles.
 
 ---
 
@@ -159,7 +162,7 @@ Use CPTools tooling for treatment-vs-control feature interpretation:
 ```python
 top_hits = cpt.tl.visualize_drug_effect(
     adata,
-    treatment=["Triptonide", "Triptolide"],
+    treatment=["compound_A", "compound_B"],
     treatment_key="Treatment",
     control_value="DMSO",
     batch_key="Batch",
@@ -186,7 +189,7 @@ import scanpy as sc
 # 1) Load
 adata = cpt.io.read_harmony(
     plate_results_path=["./data/01A/PlateResults.txt", "./data/01B/PlateResults.txt"],
-    schema="./data/Schema_MCE_master_v2.csv",
+    schema="./data/plate_metadata.csv",
     batch=["01A", "01B"],
 )
 
@@ -220,7 +223,7 @@ cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)
 # 6) Drug-effect visualization
 top_hits = cpt.tl.visualize_drug_effect(
     adata,
-    treatment=["Triptonide", "Triptolide"],
+    treatment=["compound_A", "compound_B"],
     treatment_key="Treatment",
     control_value="DMSO",
     batch_key="Batch",

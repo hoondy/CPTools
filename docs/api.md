@@ -13,7 +13,8 @@ This page provides a comprehensive reference for the CPTools API, organized by m
 ### `read_harmony`
 `cpt.io.read_harmony(plate_results_path, schema=None, batch=None, cell_type=None, feature_prefix='Nuclei Selected - ', control_value='DMSO', schema_path=None)`
 
-Read Harmony output and a master schema table into a single AnnData object.
+Read Harmony output and a plate metadata table into a single AnnData object.
+The [metadata guide](metadata.md) describes the table.
 
 **Parameters**
 
@@ -31,8 +32,8 @@ Read Harmony output and a master schema table into a single AnnData object.
 - `anndata.AnnData`: An AnnData object containing the merged plate results and metadata. The raw features are stored in `adata.layers["raw"]`.
 
 **Notes**
-- The schema file must contain `Batch`, `Row`, and `Column` columns to match with the Harmony results.
-- If `Treatment` is not in the schema, it will be inferred from `Drug_name` or `Drug_code` if available.
+- The metadata table must contain `Batch`, `Row`, and `Column` columns to match with the Harmony results.
+- If `Treatment` is not in the metadata, it is taken from a `Drug_name` or `Drug_code` column if one exists.
 - Features are automatically renamed using `clean_feature_name` to be more compact.
 
 **Example**
@@ -216,7 +217,7 @@ Mark or drop highly correlated features, keeping the representative with the hig
 `cpt.pp.control_agreement_filter(adata, *, copies, batch_key=None, source_layer=None, alpha=0.05, subset=False, inplace=True)`
 
 Flag features on which two copies of the same control condition disagree
-beyond well noise, e.g. dedicated vs scattered WT+DMSO wells. Uses control
+beyond well noise, e.g. dedicated reference wells vs scattered vehicle wells. Uses control
 wells only, so no genotype or treatment effect enters the selection.
 
 **Parameters**
@@ -244,11 +245,53 @@ disagreement is broad: dropping features will not remove it, so correct it inste
 **Example**
 ```python
 copies = {
-    "DMSO": ("line == 'WT' and Drug_code == 'c_DM'", "line == 'WT' and Drug_code == 'c_DM_rand'"),
-    "cells_only": ("line == 'WT' and Drug_code == 'c'", "line == 'WT' and Drug_code == 'c_rand'"),
+    "DMSO": ("line == 'WT' and role == 'reference' and Treatment == 'DMSO'",
+             "line == 'WT' and role == 'vehicle' and Treatment == 'DMSO'"),
+    "untreated": ("line == 'WT' and role == 'reference' and Treatment == 'untreated'",
+                  "line == 'WT' and role == 'vehicle' and Treatment == 'untreated'"),
 }
 cpt.pp.control_agreement_filter(adata, copies=copies, batch_key="Batch", source_layer="raw")
 keep = adata.var["pass_control_agreement"]
+```
+
+---
+
+### `spatial_polish`
+`cpt.pp.spatial_polish(adata, *, batch_key='Batch', row_key='Row', column_key='Column', source_layer='normalized', output_layer='polished', fit_query=None, origin_query=None, n_iter=3, min_wells=4, inplace=True)`
+
+Removes row and column effects within each plate by two-way median polish
+(Tukey; the location part of the B-score, Brideau et al. 2003, without its MAD
+rescaling). For each plate and feature, alternating sweeps subtract the median
+of every row and then of every column. Each plate ends up centered on its
+typical well; `origin_query` (e.g. `"Treatment == 'DMSO'"`) then subtracts the
+median of those wells pooled over all plates, one vector for every plate, so 0
+means that condition again without per-plate noise.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `fit_query` | `str \| None` | `None` | Wells whose medians estimate the effects (default: all). Effects are subtracted from every well. |
+| `origin_query` | `str \| None` | `None` | Wells whose pooled median becomes 0 after polishing. |
+| `n_iter` | `int` | `3` | Row + column sweeps. |
+| `min_wells` | `int` | `4` | Rows/columns with fewer fit wells are left uncorrected (with a warning). |
+
+**Assumption.** Treatments are placed at random, so a row or column median
+reflects position, not biology. Controls in fixed rows or columns, or a set of
+treatments randomized separately into its own rows, violate this: exclude them
+with `fit_query`. Remove locally failed wells first (e.g. a damaged block found
+with `replicate_outliers`): a block that pulls its row's median would shift the
+healthy wells of that row. Each median of a few wells adds noise to its row or
+column; compare replicate agreement (`replicate_map`) and `batch_similarity`
+before and after.
+
+**Writes** X and `output_layer`; `uns["cptools"]["spatial_polish"]` holds the
+parameters, per-plate RMS of the removed row and column effects and the
+`origin_shift` vector.
+
+```python
+cpt.pp.robust_reference_normalize(adata, reference_query="Treatment == 'DMSO'",
+                                  anchor_queries={"compounds": "Treatment != 'DMSO'"},
+                                  location="median", scale="replicate", scale_groupby=["Treatment"])
+cpt.pp.spatial_polish(adata, source_layer="normalized", origin_query="Treatment == 'DMSO'")
 ```
 
 ---
@@ -483,7 +526,9 @@ Generate treatment-vs-control volcano plot and boxplots including rescue groups.
 ### Group geometry: `group_separation`, `profile_shift`, `feature_contrasts`
 
 Groups are named `obs.query` selections, e.g.
-`groups = {"WT_DMSO": "line == 'WT' and Treatment == 'DMSO'", ...}`.
+`groups = {"WT_DMSO": "line == 'WT' and Treatment == 'DMSO'", ...}`. The
+[genotype screen workflow](genotype_screen_workflow.md) combines these
+functions for a genotype × compound screen.
 All three require a common finite feature set (`features=`) in a normalized
 layer. Squared distances and dot products are corrected for well-sampling
 noise (trace of each group's covariance / n).
@@ -514,10 +559,74 @@ no wells; shared groups are debiased.
 
 `toward` requires a `(start, end)` shift.
 
-`cpt.tl.feature_contrasts(adata, *, groups, contrasts, layer='normalized', features=None)`
+`cpt.tl.profile_shift_screen(adata, *, groups, axis, shifts, toward=None, layer='normalized', features=None, n_boot=0, random_state=0)`
 
-Per-feature Welch tests for `{name: (a, b)}` contrasts (b − a): difference,
-Cohen's d, t, p and BH q within each contrast, as a long table.
+`profile_shift` for many shifts on one axis, e.g. every compound of a screen
+on a disease axis. `shifts` maps names to `(start, end)` pairs or weighted
+combinations; shifts may share the vehicle group with each other and with the
+axis. Returns one row per shift (indexed by name) with the `profile_shift`
+statistics, `min_group_wells` and `q_projection`, the Benjamini–Hochberg
+q-value across the shifts of the call. `toward` adds `remaining_distance` for
+`(start, end)` shifts. Projection intervals are analytic; `n_boot > 0` adds
+bootstrap intervals for the other metrics.
+
+A treatment's response in one genotype minus its response in another is a
+weighted shift. With identical plate layouts, it cancels effects shared by
+both genotypes, such as generic drug effects or effects of the drug's well
+positions:
+
+```python
+groups = {"MUT_DMSO": ..., "WT_DMSO": ..., "MUT_cells": ..., "WT_cells": ...,
+          **{f"MUT_{d}": ... for d in drugs}, **{f"WT_{d}": ... for d in drugs}}
+axis = {"WT_DMSO": .5, "WT_cells": .5, "MUT_DMSO": -.5, "MUT_cells": -.5}   # MUT -> WT
+toward_wt = cpt.tl.profile_shift_screen(adata, groups=groups, axis=axis, toward="WT_DMSO",
+                                        shifts={d: ("MUT_DMSO", f"MUT_{d}") for d in drugs})
+specific = cpt.tl.profile_shift_screen(adata, groups=groups, axis=axis, shifts={
+    d: {f"MUT_{d}": 1, "MUT_DMSO": -1, f"WT_{d}": -1, "WT_DMSO": 1} for d in drugs})
+```
+
+`cpt.tl.axis_pca(adata, *, groups, axis, origin=None, layer='normalized', features=None, fit_query=None, n_comps=2)`
+
+A PCA whose first coordinate is fixed to an axis. `axis` is the column of the
+projection, (x − origin)·A/|A|² (0 at the origin group, 1 at the end of the
+axis). `orthogonal_1`, `orthogonal_2`, … project what is left on the main
+directions of the residuals of the `fit_query` wells, also in units of |A|.
+Residual directions are taken around the origin, so the origin stays at 0.
+Returns one row per well; `attrs["variance_fraction"]` gives the share of the
+fit wells' squared distance from the origin along the axis and along each
+orthogonal direction.
+
+```python
+emb = cpt.tl.axis_pca(adata, groups=groups, axis=("MUT_DMSO", "WT_DMSO"),
+                      fit_query="line == 'MUT' and role == 'compound'")
+# plot emb["axis"] against emb["orthogonal_1"]: MUT_DMSO at (0, 0), WT_DMSO at (1, 0)
+```
+
+`cpt.tl.feature_contrasts(adata, *, groups, contrasts, layer='normalized', features=None, variance='welch')`
+
+Per-feature tests for `{name: (a, b)}` contrasts (b − a): difference, its
+standard error, Cohen's d, t, p and BH q within each contrast, as a long
+table. `variance="welch"` uses each pair's own variances (Welch test);
+`variance="pooled"` pools one variance per feature over every group in
+`contrasts` (t test on the pooled df), which is far more stable with three
+wells per group in a noise-scaled layer.
+
+`cpt.tl.feature_meta_analysis(table, *, effect='difference', standard_error='standard_error', by='feature', study='contrast', method='fixed')`
+
+Combines the contrasts of a `feature_contrasts` table per feature by
+inverse-variance meta-analysis, like metafor's `rma(yi, sei, method="FE")`.
+`method="fixed"` estimates one effect shared by all contrasts;
+`method="random"` adds a DerSimonian–Laird between-contrast variance (`tau2`).
+Returns one row per feature: `estimate`, `standard_error`, 95% CI, `z`,
+`p_value`, BH `q_value` across features, Cochran's `Q` and its p-value, `I2`,
+`tau2`, `k` and `n_positive` (contrasts with a positive effect). Standard
+errors from a few wells are noisy, so p-values are approximate.
+
+```python
+per_line = cpt.tl.feature_contrasts(adata, groups=groups, variance="pooled", contrasts={
+    "MUT1": ("P1_WT_DMSO", "P1_MUT1_DMSO"), "MUT2": ("P2_WT_DMSO", "P2_MUT2_DMSO")})
+meta = cpt.tl.feature_meta_analysis(per_line)   # one row per feature
+```
 
 `cpt.tl.replicate_outliers(adata, *, groupby, layer='normalized', features=None, threshold=3.5)`
 
@@ -677,3 +786,69 @@ for line, rows in real.groupby("line"):
 Triplicate pseudo-drugs need at least 5 vehicle wells per genotype and plate.
 With fewer, use a positional null instead, e.g. WT wells placed in screening
 positions and scored as a pseudo-disease.
+
+---
+
+### Batch-effect diagnostics: `batch_similarity`, `group_retrieval`, `scrambled_treatments`
+
+When compounds are assigned to plates without regard to biology, two compounds
+from one plate should be no more alike than two from different plates, and
+matched profiles of one compound on different plates (salt forms, repeated
+library entries) should find each other. These functions score a
+representation on both, and calibrate activity calls with a null that keeps
+the treated-well context. Use them to compare normalizations and batch
+corrections on the same feature set.
+
+`cpt.tl.batch_similarity(adata, *, batch_keys='Batch', layer=None, use_rep=None, features=None, query=None, exclude_key=None, n_neighbors=5)`
+
+One row per batch key (e.g. plate, imaging day, cell batch), usually on one
+consensus profile per compound (e.g. from `sc.get.aggregate`) or an embedding
+(`use_rep`). `cosine_same` / `cosine_cross` are the mean cosine similarities
+of profile pairs from the same / different batches, and `cosine_excess` is
+their difference (0 without a shared batch component). `knn_same` is the
+fraction of each profile's `n_neighbors` most similar profiles from its own
+batch, `knn_expected` the fraction expected if neighbors ignored batch, and
+`knn_enrichment` their ratio (1 without batch clustering). `exclude_key`
+ignores pairs sharing its value, e.g. `"Treatment"` for well-level profiles
+whose replicates share a plate. Profiles are not centered, because the origin
+of a normalization is part of what is evaluated.
+
+`cpt.tl.group_retrieval(adata, *, group_key, relation_keys=None, layer=None, use_rep=None, features=None, query=None)`
+
+Every profile with a `group_key` value queries all other profiles by cosine
+similarity. One row per ordered (query, positive) pair: `rank` (1 + the number
+of non-members more similar than the positive; other members never push a
+positive down), `n_candidates`, `rank_fraction` (`<= 0.01` = top 1%) and
+`cosine`. `relation_keys`, finest first (e.g. `["Batch", "day", "cell_batch"]`),
+label each pair by the first key on which the two agree (`"same Batch"`, ...)
+or `"different <last key>"`. Restrict positives to active compounds by setting
+`group_key` to missing for the others; they stay candidates.
+
+`cpt.tl.scrambled_treatments(adata, *, treatment_key='Treatment', control_value='DMSO', batch_key='Batch', group_size=None, prefix='scrambled_', random_state=0)`
+
+Relabels treated wells into random same-batch groups of `group_size` wells
+from different treatments (default: the most common number of wells per
+treatment in a batch). Returns a Series of labels: `control_value` for
+controls, `"<prefix><batch>_<k>"` for assigned wells, NaN for leftovers.
+Scored like real treatments, the groups estimate how often unrelated treated
+wells look active. Unlike `pseudo_treatment_null`, which draws from control
+wells, they share whatever treated wells share and controls lack (compound
+handling, solvent, the positions a layout reserves for compounds). A method
+whose scrambled groups pass well above the nominal rate inflates activity.
+
+```python
+import scanpy as sc
+
+profiles = sc.get.aggregate(adata[adata.obs["Treatment"] != "DMSO"], by="Treatment",
+                            func="mean", layer="normalized")
+profiles.X = profiles.layers["mean"]
+profiles.obs = profiles.obs.join(compound_table[["Batch", "imaging_day", "parent"]])
+cpt.tl.batch_similarity(profiles, batch_keys=["Batch", "imaging_day"])
+pairs = cpt.tl.group_retrieval(profiles, group_key="parent", relation_keys=["Batch", "imaging_day"])
+top_1pct = (pairs["rank_fraction"] <= 0.01).groupby(pairs["relation"]).mean()
+
+labels = cpt.tl.scrambled_treatments(adata)
+null = adata[labels.notna().to_numpy()].copy()
+null.obs["scrambled"] = labels.dropna()
+false_active = (cpt.tl.replicate_map(null, treatment_key="scrambled")["p_value"] < 0.05).mean()
+```

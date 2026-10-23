@@ -196,6 +196,17 @@ def profile_shift(
         path = (shift[0], shift[1], toward)
     names = [*beta, *alpha] + ([toward] if toward is not None else [])
     X, index = _prepare(adata, groups, names, layer, features)
+    result = {
+        "axis": _describe(axis), "shift": _describe(shift), "toward": toward or "",
+        **{f"n_{g}": len(i) for g, i in index.items()},
+        "n_features": X.shape[1],
+        **_shift_row(X, index, alpha, beta, path, n_boot, np.random.default_rng(random_state)),
+    }
+    return pd.Series(result, name=f"{_describe(shift)} along {_describe(axis)}")
+
+
+def _shift_row(X, index, alpha, beta, path, n_boot, rng):
+    """Debiased statistics, projection inference and bootstrap intervals of one shift."""
     observed = _shift_statistics(X, index, alpha, beta, path)
     se = df = np.nan
     if np.isfinite(observed["projection"]):
@@ -204,9 +215,6 @@ def profile_shift(
         axis_sq = float(A @ A) - sum(w * w * noise[g] for g, w in beta.items())
         se, df = _projection_inference(X, index, alpha, beta, observed["projection"], axis_sq)
     result = {
-        "axis": _describe(axis), "shift": _describe(shift), "toward": toward or "",
-        **{f"n_{g}": len(i) for g, i in index.items()},
-        "n_features": X.shape[1],
         **{k: v for k, v in observed.items() if k != "dot"},
         "projection_se": se, "projection_df": df,
         "projection_ci_low": observed["projection"] - stats.t.ppf(0.975, df) * se,
@@ -214,7 +222,6 @@ def profile_shift(
         "p_projection": float(2 * stats.t.sf(abs(observed["projection"]) / se, df)) if se > 0 else np.nan,
     }
 
-    rng = np.random.default_rng(random_state)
     keys = ["cosine_debiased", "shift_vs_axis_length", "orthogonal_vs_axis_length"]
     keys += ["remaining_distance"] if path is not None else []
     boot = {key: [] for key in keys}
@@ -236,7 +243,146 @@ def profile_shift(
             low = observed[key] - inflate * (q_high - plugin[key])
             high = observed[key] - inflate * (q_low - plugin[key])
         result[f"{key}_ci_low"], result[f"{key}_ci_high"] = float(low), float(high)
-    return pd.Series(result, name=f"{_describe(shift)} along {_describe(axis)}")
+    return result
+
+
+def profile_shift_screen(
+    adata: ad.AnnData,
+    *,
+    groups: Mapping[str, str],
+    axis: tuple[str, str] | Mapping[str, float],
+    shifts: Mapping[str, tuple[str, str] | Mapping[str, float]],
+    toward: str | None = None,
+    layer: str | None = "normalized",
+    features: Sequence[str] | None = None,
+    n_boot: int = 0,
+    random_state: int = 0,
+) -> pd.DataFrame:
+    """Measure many shifts on one axis, e.g. every compound of a screen.
+
+    Each value of ``shifts`` is a ``(start, end)`` pair or a ``{group: weight}``
+    combination, as in ``profile_shift``, and gets the same statistics. Shifts
+    typically share a baseline group (the vehicle) and may share groups with
+    the axis; the debiasing handles both. Contrasts between shifts are shifts
+    too, e.g. a drug's response in a mutant minus its response in WT:
+    ``{"MUT_drug": 1, "MUT_DMSO": -1, "WT_drug": -1, "WT_DMSO": 1}``.
+
+    ``toward`` adds ``remaining_distance`` for ``(start, end)`` shifts; weighted
+    shifts get NaN. ``q_projection`` is the Benjamini-Hochberg q-value of
+    ``p_projection`` across the shifts of this call, so call once per family
+    (e.g. per genotype). Projection intervals are analytic; ``n_boot > 0``
+    adds bootstrap intervals for the other metrics at n_boot x shifts cost.
+
+    Returns one row per shift, indexed by its name, with ``min_group_wells``
+    (the smallest group the shift uses) instead of per-group counts.
+    """
+    if not shifts:
+        raise ValueError("Provide at least one shift.")
+    beta = _coefficients(axis, "axis")
+    alphas = {str(name): _coefficients(spec, f"shift {name!r}") for name, spec in shifts.items()}
+    paths = {}
+    if toward is not None:
+        for name, spec in shifts.items():
+            if isinstance(spec, Mapping):
+                continue
+            if toward == spec[0]:
+                raise ValueError(f"toward must differ from the start group of shift {name!r}.")
+            paths[str(name)] = (spec[0], spec[1], toward)
+    names = [*beta, *(g for alpha in alphas.values() for g in alpha)] + ([toward] if toward is not None else [])
+    X, index = _prepare(adata, groups, names, layer, features)
+    rng = np.random.default_rng(random_state)
+    rows = {}
+    for (name, alpha), spec in zip(alphas.items(), shifts.values()):
+        path = paths.get(name)
+        used = {*beta, *alpha, *([toward] if path is not None else [])}
+        subset = {g: i for g, i in index.items() if g in used}
+        rows[name] = {
+            "axis": _describe(axis), "shift": _describe(spec), "toward": toward if path is not None else "",
+            "n_features": X.shape[1], "min_group_wells": min(len(index[g]) for g in alpha),
+            **_shift_row(X, subset, alpha, beta, path, n_boot, rng),
+        }
+        if toward is not None and path is None:
+            rows[name]["remaining_distance"] = np.nan
+    table = pd.DataFrame.from_dict(rows, orient="index")
+    table.index.name = "name"
+    p = table["p_projection"].to_numpy(dtype=float)
+    q = np.full(len(p), np.nan)
+    finite = np.isfinite(p)
+    q[finite] = bh_fdr(p[finite])
+    table["q_projection"] = q
+    return table
+
+
+def axis_pca(
+    adata: ad.AnnData,
+    *,
+    groups: Mapping[str, str],
+    axis: tuple[str, str] | Mapping[str, float],
+    origin: str | None = None,
+    layer: str | None = "normalized",
+    features: Sequence[str] | None = None,
+    fit_query: str | None = None,
+    n_comps: int = 2,
+) -> pd.DataFrame:
+    """Coordinates along an axis and along the main directions orthogonal to it.
+
+    A PCA whose first coordinate is fixed to an axis, e.g. WT -> mutant.
+    ``axis`` is a ``(start, end)`` pair or a ``{group: weight}`` combination
+    as in ``profile_shift``; ``origin`` (default: the start group of a pair)
+    is placed at 0. For each well x, with A the axis vector and o the origin
+    centroid:
+
+    - ``axis`` = (x - o).A / |A|^2: 0 at the origin, 1 at the end of the axis;
+    - ``orthogonal_k``: the residual (x - o) minus its axis part, projected on
+      the k-th principal direction of the residuals of the ``fit_query``
+      wells (all wells by default), divided by |A|.
+
+    All coordinates share the axis-length unit, so a plot of ``axis`` against
+    ``orthogonal_1`` keeps distances comparable. Residual directions are taken
+    around the origin, not around the residual mean, so the origin stays at
+    0 on every coordinate; each direction is signed so that the fit wells
+    have a non-negative mean. ``attrs["variance_fraction"]`` gives the share
+    of the fit wells' squared distance from the origin along the axis and
+    along each orthogonal direction; ``attrs["axis_length"]`` is |A|.
+
+    Centroids carry well noise; with few wells per group, the axis direction
+    is approximate. Returns one row per well, indexed like ``adata.obs``.
+    """
+    beta = _coefficients(axis, "axis")
+    if origin is None:
+        if isinstance(axis, Mapping):
+            raise ValueError("origin is required when axis is a weighted combination.")
+        origin = axis[0]
+    if not isinstance(n_comps, (int, np.integer)) or n_comps < 1:
+        raise ValueError("n_comps must be a positive integer.")
+    X, index = _prepare(adata, groups, [*beta, origin], layer, features)
+    if not np.isfinite(X).all():
+        raise ValueError("Profiles contain nonfinite values; select a common finite feature set first.")
+    means = {g: X[i].mean(axis=0) for g, i in index.items()}
+    A = sum(w * means[g] for g, w in beta.items())
+    length = float(np.linalg.norm(A))
+    if length == 0:
+        raise ValueError("The axis has zero length.")
+    Z = X - means[origin]
+    along = Z @ A / length**2
+    residual = Z - np.outer(along, A)
+    fit = np.ones(adata.n_obs, dtype=bool) if fit_query is None else _query_mask(adata.obs, fit_query)
+    if fit.sum() < 2:
+        raise ValueError("fit_query selects fewer than 2 wells.")
+    _, singular, directions = np.linalg.svd(residual[fit], full_matrices=False)
+    n_comps = min(int(n_comps), len(singular))
+    coords = residual @ directions[:n_comps].T
+    flip = np.where(coords[fit].mean(axis=0) < 0, -1.0, 1.0)
+    coords = coords * flip / length
+    total = float(np.sum(Z[fit] ** 2))
+    table = pd.DataFrame(np.column_stack([along, coords]), index=adata.obs_names,
+                         columns=["axis", *[f"orthogonal_{k + 1}" for k in range(n_comps)]])
+    table.attrs["axis_length"] = length
+    table.attrs["variance_fraction"] = {
+        "axis": float(np.sum((along[fit] * length) ** 2) / total) if total > 0 else np.nan,
+        **{f"orthogonal_{k + 1}": float(singular[k] ** 2 / total) if total > 0 else np.nan for k in range(n_comps)},
+    }
+    return table
 
 
 def replicate_outliers(
@@ -389,31 +535,131 @@ def feature_contrasts(
     contrasts: Mapping[str, tuple[str, str]],
     layer: str | None = "normalized",
     features: Sequence[str] | None = None,
+    variance: str = "welch",
 ) -> pd.DataFrame:
-    """Per-feature Welch t-tests for named contrasts ``name: (a, b)`` (b - a).
+    """Per-feature t-tests for named contrasts ``name: (a, b)`` (b - a).
 
-    Returns a long table with ``difference`` (layer units), ``cohen_d`` (pooled
-    within-pair SD), ``t``, ``p_value`` and Benjamini-Hochberg ``q_value``
-    computed within each contrast. Wells are technical replicates; correlated
-    features make the number of significant features a descriptive count.
+    Returns a long table with ``difference`` (layer units), its
+    ``standard_error``, ``cohen_d`` (pooled within-pair SD), ``t``,
+    ``p_value`` and Benjamini-Hochberg ``q_value`` computed within each
+    contrast. ``variance`` sets the standard error:
+
+    - ``"welch"``: sqrt(var_a/n_a + var_b/n_b) from the two groups (Welch test);
+    - ``"pooled"``: one variance per feature pooled over every group named in
+      ``contrasts`` (df = sum of n_g - 1), sqrt(s^2 (1/n_a + 1/n_b)), with a
+      t test on that df. It assumes equal well noise across groups, as in a
+      noise-scaled layer, and is far more stable when groups have few wells.
+
+    Wells are technical replicates; correlated features make the number of
+    significant features a descriptive count. ``feature_meta_analysis``
+    combines the contrasts per feature.
     """
     if not contrasts:
         raise ValueError("Provide at least one contrast.")
+    if variance not in {"welch", "pooled"}:
+        raise ValueError("variance must be 'welch' or 'pooled'.")
     names = [g for pair in contrasts.values() for g in pair]
     X, index = _prepare(adata, groups, names, layer, features)
     feature_names = (adata.var_names if features is None else pd.Index(list(features))).astype(str)
+    if variance == "pooled":
+        unique = list(dict.fromkeys(names))
+        df_pooled = sum(len(index[g]) - 1 for g in unique)
+        if df_pooled < 1:
+            raise ValueError("variance='pooled' needs groups with at least two wells.")
+        s2 = sum(((X[index[g]] - X[index[g]].mean(axis=0)) ** 2).sum(axis=0) for g in unique) / df_pooled
     tables = []
     for name, (a, b) in contrasts.items():
         xa, xb = X[index[a]], X[index[b]]
         diff = xb.mean(axis=0) - xa.mean(axis=0)
         na, nb = len(xa), len(xb)
-        pooled = np.sqrt(((na - 1) * xa.var(axis=0, ddof=1) + (nb - 1) * xb.var(axis=0, ddof=1)) / (na + nb - 2))
-        t, p = stats.ttest_ind(xb, xa, axis=0, equal_var=False)
+        va, vb = xa.var(axis=0, ddof=1), xb.var(axis=0, ddof=1)
+        pooled = np.sqrt(((na - 1) * va + (nb - 1) * vb) / (na + nb - 2))
+        if variance == "pooled":
+            se = np.sqrt(s2 * (1.0 / na + 1.0 / nb))
+            t = np.divide(diff, se, out=np.full_like(diff, np.nan), where=se > 0)
+            p = 2.0 * stats.t.sf(np.abs(t), df_pooled)
+        else:
+            se = np.sqrt(va / na + vb / nb)
+            t, p = stats.ttest_ind(xb, xa, axis=0, equal_var=False)
         p = np.where(np.isfinite(p), p, 1.0)
         tables.append(pd.DataFrame({
             "contrast": name, "feature": feature_names, "group_a": a, "group_b": b,
-            "difference": diff,
+            "difference": diff, "standard_error": se,
             "cohen_d": np.divide(diff, pooled, out=np.full_like(diff, np.nan), where=pooled > 0),
             "t": t, "p_value": p, "q_value": bh_fdr(p),
         }))
     return pd.concat(tables, ignore_index=True)
+
+
+def feature_meta_analysis(
+    table: pd.DataFrame,
+    *,
+    effect: str = "difference",
+    standard_error: str = "standard_error",
+    by: str = "feature",
+    study: str = "contrast",
+    method: str = "fixed",
+) -> pd.DataFrame:
+    """Inverse-variance meta-analysis of per-feature effects across contrasts.
+
+    Combines a long table with one row per ``by`` (feature) and ``study``
+    (contrast), such as the output of ``feature_contrasts``, into one row per
+    feature, like metafor's ``rma(yi, sei, method="FE")``. With effects y_i,
+    standard errors s_i and weights w_i = 1 / s_i^2 over the k contrasts:
+
+    - ``method="fixed"``: estimate = sum(w_i y_i) / sum(w_i), standard error
+      1 / sqrt(sum(w_i)); it tests a common effect shared by all contrasts.
+    - ``method="random"``: DerSimonian-Laird; between-contrast variance
+      tau2 = max(0, (Q - (k - 1)) / (sum(w_i) - sum(w_i^2) / sum(w_i))) and
+      weights 1 / (s_i^2 + tau2).
+
+    Columns: ``estimate``, ``standard_error``, 95% ``ci_low``/``ci_high``,
+    ``z``, two-sided ``p_value``, Benjamini-Hochberg ``q_value`` across
+    features, Cochran's ``Q`` (sum(w_i (y_i - fixed estimate)^2)) with its
+    chi-square ``Q_p_value`` on k - 1 df, ``I2`` = max(0, (Q - (k - 1)) / Q),
+    ``tau2`` (0 for the fixed model), ``k`` and ``n_positive`` (contrasts with
+    y_i > 0). Rows with a missing effect or a nonpositive or missing standard
+    error are skipped. Standard errors from a few wells are themselves noisy,
+    so p-values are approximate. Returns a table indexed by ``by``.
+    """
+    if method not in {"fixed", "random"}:
+        raise ValueError("method must be 'fixed' or 'random'.")
+    missing = [c for c in (effect, standard_error, by, study) if c not in table.columns]
+    if missing:
+        raise KeyError(f"Missing columns: {missing}")
+    if table.duplicated([by, study]).any():
+        raise ValueError(f"Each ({by}, {study}) pair must appear once.")
+    y = table[effect].to_numpy(dtype=float)
+    s = table[standard_error].to_numpy(dtype=float)
+    keep = np.isfinite(y) & np.isfinite(s) & (s > 0)
+    if not keep.any():
+        raise ValueError("No rows with a finite effect and a positive standard error.")
+    data = pd.DataFrame({"key": table[by].to_numpy()[keep], "y": y[keep], "w": 1.0 / s[keep] ** 2})
+    data["wy"], data["wyy"], data["ww"] = data.w * data.y, data.w * data.y ** 2, data.w ** 2
+    sums = data.groupby("key", sort=False).agg(k=("y", "size"), n_positive=("y", lambda v: int((v > 0).sum())),
+                                              w=("w", "sum"), wy=("wy", "sum"), wyy=("wyy", "sum"), ww=("ww", "sum"))
+    fixed = sums.wy / sums.w
+    Q = (sums.wyy - sums.wy ** 2 / sums.w).clip(lower=0.0)
+    df = sums.k - 1
+    if method == "fixed":
+        tau2 = pd.Series(0.0, index=sums.index)
+        estimate, se = fixed, 1.0 / np.sqrt(sums.w)
+    else:
+        c = sums.w - sums.ww / sums.w
+        tau2 = ((Q - df) / c.where(c > 0)).clip(lower=0.0).fillna(0.0)
+        data["w_re"] = 1.0 / (1.0 / data.w + data.key.map(tau2))
+        data["wy_re"] = data.w_re * data.y
+        re = data.groupby("key", sort=False)[["w_re", "wy_re"]].sum()
+        estimate, se = re.wy_re / re.w_re, 1.0 / np.sqrt(re.w_re)
+    z = estimate / se
+    p = 2.0 * stats.norm.sf(np.abs(z))
+    out = pd.DataFrame({
+        "estimate": estimate, "standard_error": se,
+        "ci_low": estimate - 1.959964 * se, "ci_high": estimate + 1.959964 * se,
+        "z": z, "p_value": p, "q_value": bh_fdr(p),
+        "Q": Q, "Q_p_value": np.where(df > 0, stats.chi2.sf(Q, df.clip(lower=1)), np.nan),
+        "I2": np.where(Q > 0, ((Q - df) / Q.where(Q > 0)).clip(lower=0.0), 0.0),
+        "tau2": tau2, "k": sums.k, "n_positive": sums.n_positive,
+    })
+    out.index.name = by
+    return out

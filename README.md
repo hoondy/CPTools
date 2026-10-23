@@ -5,7 +5,7 @@
 [![Scanpy](https://img.shields.io/badge/dependency-Scanpy-brightgreen.svg)](https://scanpy.readthedocs.io/)
 
 Cell Painting utilities for:
-- Harmony + master schema ingestion into `AnnData`
+- Harmony + plate metadata ingestion into `AnnData`
 - Control-based robust normalization
 - Feature filtering and reproducibility-aware selection
 - ZCA whitening for improved geometric comparisons
@@ -15,10 +15,12 @@ Cell Painting utilities for:
 
 - **Explicit Normalization**: Normalize with `robust_zscore_norm` or `reference_normalize`, then use `funnel` for filtering and feature selection.
 - **Shared WT References**: `reference_normalize` separates WT reference wells from mutant vehicle controls, pools within-plate reference variability, and optionally calibrates positive-control gains.
-- **Control-based Feature QC**: `control_agreement_filter` flags features on which two copies of the same control (e.g. dedicated and scattered WT+DMSO wells) disagree beyond well noise, and reports whether a disagreement is too broad to filter away.
+- **Control-based Feature QC**: `control_agreement_filter` flags features on which two copies of the same control (e.g. dedicated reference wells and scattered vehicle wells) disagree beyond well noise, and reports whether a disagreement is too broad to filter away.
 - **Robust References**: `robust_reference_normalize` estimates plate offsets from several shared anchors, shrinks them when they are not larger than their noise, and can scale by replicate residuals of all replicated groups.
-- **Bias-aware Geometry**: `group_separation`, `profile_shift` and `feature_contrasts` test genotype separation and treatment shifts along a phenotype axis, correcting distances and projections for well-sampling noise.
+- **Bias-aware Geometry**: `group_separation`, `profile_shift` and `feature_contrasts` test genotype separation and treatment shifts along a phenotype axis, correcting distances and projections for well-sampling noise. `profile_shift_screen` scores every compound of a screen on one axis, with BH q-values; `feature_meta_analysis` combines per-feature contrasts across plates or lines (fixed or random effects).
 - **Hit Calling with Nulls**: `replicate_map` scores replicate retrieval (copairs-style mAP) with label-shuffle p-values; `pseudo_treatment_null` turns random same-plate DMSO well groups into pseudo-drugs, so any score gets an empirical null via `empirical_pvalues`.
+- **Position Effects**: `spatial_polish` removes row and column effects within each plate (two-way median polish, the location part of the B-score) for randomized layouts.
+- **Batch Diagnostics**: `batch_similarity` measures how much profiles resemble others from their own plate or day; `group_retrieval` ranks matched profiles (e.g. salt forms of one compound) across plates; `scrambled_treatments` relabels treated wells into groups of unrelated compounds, a null for activity calls.
 - **Batch-Aware Statistics**: Normalization and treatment effects are calculated relative to matched controls in each batch.
 - **AnnData Compatibility**: Built directly on top of `AnnData` for seamless integration with `Scanpy`.
 - **High-Quality Visualization**: Interactive Plotly-based plots for exploratory analysis.
@@ -80,20 +82,24 @@ pip install git+https://github.com/hoondy/CPTools
 
 ## Quick Start
 
+Plate metadata is one table with one row per well. Harmony import requires
+`Batch`, `Row` and `Column`; the [metadata guide](docs/metadata.md) lists the
+columns that the normalization and screening functions use and how to encode
+control roles.
+
 ```python
 import CPTools as cpt
 
-# data I/O (single pre-processed schema for all plates)
+# data I/O (one metadata table for all plates)
 res_list = ["Plate01A/PlateResults.txt", "Plate01B/PlateResults.txt"]
 batch_list = ["01A", "01B"]
 adata = cpt.io.read_harmony(
     plate_results_path=res_list,
-    schema="/path/to/schema.csv",
+    schema="/path/to/plate_metadata.csv",
     batch=batch_list,
-    cell_type="iGLUT",
 )
 
-# required schema columns: Batch, Row, Column
+# required metadata columns: Batch, Row, Column
 
 # normalization
 adata = cpt.pp.robust_zscore_norm(adata)
@@ -155,16 +161,17 @@ prevents genotype-dependent responses from being treated as replicate noise.
 
 ## Shared WT controls on genotype-specific plates
 
-Use explicit reference roles when WT and mutant wells both have `Treatment="DMSO"`:
+Use explicit reference roles when WT and mutant wells both have `Treatment="DMSO"`
+(a `role` column, see the [metadata guide](docs/metadata.md)):
 
 ```python
 import anndata as ad
 import CPTools as cpt
 
-adata = ad.read_h5ad("260908_iGLUT_bitbio_ADPD_merged_clean.h5ad")
+adata = ad.read_h5ad("screen.h5ad")
 normalized = cpt.pp.reference_normalize(
     adata,
-    reference_query="line == 'WT' and Drug_code == 'c_DM'",
+    reference_query="line == 'WT' and role == 'reference'",
     source_layer="raw",
     output_layer="normalized",
     inplace=False,
@@ -178,12 +185,20 @@ in `var["pass_reference_normalization"]` and set to NaN. Keep `layers["raw"]`
 as the input to repeated fits. Positive-control calibration is optional and should
 be evaluated with held-out controls before use.
 
-See the [method and API guide](docs/reference_normalization.md).
+See the [method and API guide](docs/reference_normalization.md). Validate the
+normalization on held-out control wells with `cpt.tl.reference_control_cv`.
 
 For few references per plate, compare `cpt.pp.robust_reference_normalize`
 (multi-anchor plate offsets with James-Stein shrinkage and an optional
 replicate-residual scale) using `reference_control_cv(..., robust_options=...)`.
 `rescue_scores` also reports noise-debiased projections; see the guide.
+
+For genotype × compound screens, the [genotype screen workflow](docs/genotype_screen_workflow.md)
+covers well-level genotype separation, genotype axes, compound rescue and
+mutant-specific scores, and per-feature meta-analysis across lines.
+
+For development, install `python -m pip install -e '.[test,notebook]'` and run
+`python -m pytest -q`.
 
 To subset features physically, opt in with:
 
@@ -236,9 +251,13 @@ sc.tl.umap(adata)
 sc.tl.leiden(adata)
 ```
 
-## API Documentation
+## Documentation
 
-For a full list of available functions and their parameters, see the [API Reference](docs/api.md).
+- [API reference](docs/api.md): every function and its parameters.
+- [Tutorial](TUTORIAL.md): end-to-end drug-screen workflow.
+- [Plate metadata](docs/metadata.md): required and recommended columns, control roles.
+- [Shared-reference normalization](docs/reference_normalization.md): formulas, robust variant, held-out diagnostics, rescue scores.
+- [Genotype screen workflow](docs/genotype_screen_workflow.md): genotype axes, compound rescue and feature meta-analysis.
 
 ## Visualization
 
@@ -253,7 +272,7 @@ cpt.tl.scatter(adata, color=["Batch", "DMSO"], use_rep="X_umap", wspace=0.4)
 # treatment vs control effect plots (volcano + boxplots)
 top_hits = cpt.tl.visualize_drug_effect(
     adata,
-    treatment=["Triptonide", "Triptolide"],
+    treatment=["compound_A", "compound_B"],
     treatment_key="Treatment",
     control_value="DMSO",
     batch_key="Batch",  # uses matched controls from these treatment batches

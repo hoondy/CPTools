@@ -602,7 +602,7 @@ def funnel(
     lists the values of ``snr_key`` (default ``treatment_key``) whose wells
     define signal (variance of their means) and noise (replicate variance);
     all listed groups count as signal. For example
-    ``snr_key="line", snr_groups=["APOE3/3", "APOE4/4"]`` ranks features by the
+    ``snr_key="line", snr_groups=["WT", "MUT"]`` ranks features by the
     genotype contrast. ``snr_groups="all"`` uses every condition with
     ``control_value`` excluded from the signal (the original behavior, e.g. for
     drug screens). Ranking by all conditions favors whatever dominates the
@@ -839,7 +839,7 @@ def funnel(
     return target
 
 
-# Aliases mirroring notebook naming.
+# Short aliases.
 robust_zscore_normalize = robust_zscore_norm
 feature_selection_by_replicates = snr_feature_selection
 # Backward-compatible alias.

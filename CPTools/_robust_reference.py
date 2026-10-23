@@ -146,7 +146,7 @@ def fit_robust_reference_normalization(
     - ``"reference"``: pooled within-plate SD of the reference wells.
     - ``"anchors"``: pooled within-plate SD across reference and anchor wells.
     - ``"replicate"``: within-group SD of replicate groups defined by
-      ``batch_key`` + ``scale_groupby`` (e.g. ``["line", "Drug_code"]``) among
+      ``batch_key`` + ``scale_groupby`` (e.g. ``["line", "Treatment"]``) among
       ``scale_query`` wells. Only residuals around each group mean are used, so
       no disease or treatment effect enters the scale. Dispersed screening
       triplicates usually describe plate-wide well-to-well noise better than
@@ -165,7 +165,7 @@ def fit_robust_reference_normalization(
     if scale_estimator not in {"pooled", "median"}:
         raise ValueError("scale_estimator must be 'pooled' or 'median'.")
     if scale == "replicate" and not scale_groupby:
-        raise ValueError("scale='replicate' requires scale_groupby, e.g. ['line', 'Drug_code'].")
+        raise ValueError("scale='replicate' requires scale_groupby, e.g. ['line', 'Treatment'].")
     if scale != "replicate" and (scale_groupby or scale_query):
         raise ValueError("scale_groupby/scale_query are used only with scale='replicate'.")
     if not isinstance(min_controls, (int, np.integer)) or min_controls < 2:

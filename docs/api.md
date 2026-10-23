@@ -13,7 +13,8 @@ This page provides a comprehensive reference for the CPTools API, organized by m
 ### `read_harmony`
 `cpt.io.read_harmony(plate_results_path, schema=None, batch=None, cell_type=None, feature_prefix='Nuclei Selected - ', control_value='DMSO', schema_path=None)`
 
-Read Harmony output and a master schema table into a single AnnData object.
+Read Harmony output and a plate metadata table into a single AnnData object.
+The [metadata guide](metadata.md) describes the table.
 
 **Parameters**
 
@@ -31,8 +32,8 @@ Read Harmony output and a master schema table into a single AnnData object.
 - `anndata.AnnData`: An AnnData object containing the merged plate results and metadata. The raw features are stored in `adata.layers["raw"]`.
 
 **Notes**
-- The schema file must contain `Batch`, `Row`, and `Column` columns to match with the Harmony results.
-- If `Treatment` is not in the schema, it will be inferred from `Drug_name` or `Drug_code` if available.
+- The metadata table must contain `Batch`, `Row`, and `Column` columns to match with the Harmony results.
+- If `Treatment` is not in the metadata, it is taken from a `Drug_name` or `Drug_code` column if one exists.
 - Features are automatically renamed using `clean_feature_name` to be more compact.
 
 **Example**
@@ -216,7 +217,7 @@ Mark or drop highly correlated features, keeping the representative with the hig
 `cpt.pp.control_agreement_filter(adata, *, copies, batch_key=None, source_layer=None, alpha=0.05, subset=False, inplace=True)`
 
 Flag features on which two copies of the same control condition disagree
-beyond well noise, e.g. dedicated vs scattered WT+DMSO wells. Uses control
+beyond well noise, e.g. dedicated reference wells vs scattered vehicle wells. Uses control
 wells only, so no genotype or treatment effect enters the selection.
 
 **Parameters**
@@ -244,8 +245,10 @@ disagreement is broad: dropping features will not remove it, so correct it inste
 **Example**
 ```python
 copies = {
-    "DMSO": ("line == 'WT' and Drug_code == 'c_DM'", "line == 'WT' and Drug_code == 'c_DM_rand'"),
-    "cells_only": ("line == 'WT' and Drug_code == 'c'", "line == 'WT' and Drug_code == 'c_rand'"),
+    "DMSO": ("line == 'WT' and role == 'reference' and Treatment == 'DMSO'",
+             "line == 'WT' and role == 'vehicle' and Treatment == 'DMSO'"),
+    "untreated": ("line == 'WT' and role == 'reference' and Treatment == 'untreated'",
+                  "line == 'WT' and role == 'vehicle' and Treatment == 'untreated'"),
 }
 cpt.pp.control_agreement_filter(adata, copies=copies, batch_key="Batch", source_layer="raw")
 keep = adata.var["pass_control_agreement"]
@@ -523,7 +526,9 @@ Generate treatment-vs-control volcano plot and boxplots including rescue groups.
 ### Group geometry: `group_separation`, `profile_shift`, `feature_contrasts`
 
 Groups are named `obs.query` selections, e.g.
-`groups = {"WT_DMSO": "line == 'WT' and Treatment == 'DMSO'", ...}`.
+`groups = {"WT_DMSO": "line == 'WT' and Treatment == 'DMSO'", ...}`. The
+[genotype screen workflow](genotype_screen_workflow.md) combines these
+functions for a genotype × compound screen.
 All three require a common finite feature set (`features=`) in a normalized
 layer. Squared distances and dot products are corrected for well-sampling
 noise (trace of each group's covariance / n).
@@ -618,8 +623,8 @@ Returns one row per feature: `estimate`, `standard_error`, 95% CI, `z`,
 errors from a few wells are noisy, so p-values are approximate.
 
 ```python
-per_line = cpt.tl.feature_contrasts(adata, groups=groups, contrasts={
-    "APP": ("APP_WT_DMSO", "APP_DMSO"), "PSEN1": ("PSEN1_WT_DMSO", "PSEN1_DMSO")})
+per_line = cpt.tl.feature_contrasts(adata, groups=groups, variance="pooled", contrasts={
+    "MUT1": ("P1_WT_DMSO", "P1_MUT1_DMSO"), "MUT2": ("P2_WT_DMSO", "P2_MUT2_DMSO")})
 meta = cpt.tl.feature_meta_analysis(per_line)   # one row per feature
 ```
 

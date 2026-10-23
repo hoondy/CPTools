@@ -4,24 +4,21 @@ This workflow is for well-level profiles with the **same biological reference
 condition on every plate**. It is intended to preserve mutant–WT differences
 when most screening wells on each plate have a different genotype.
 
-## iGLUT metadata selections
+## Choosing the reference wells
 
-The six-plate schema has three dedicated WT+DMSO wells (`c_DM`), three WT
-Ivermectin_B1a wells (`c_Ivermectin`), and three WT Selamectin wells
-(`c_Selamectin`) per plate. It also has genotype-matched DMSO wells
-(`c_DM_rand`) and 97 compounds in triplicate (`Drug1` through `Drug97`).
-The compound panel includes both positive-control compounds.
+Record each control well's role in the metadata (e.g. a `role` column; see the
+[metadata guide](metadata.md)) and select the reference by role, genotype and
+treatment, e.g. `line == 'WT' and role == 'reference'`. Selecting all
+`Treatment == 'DMSO'` mixes WT and mutant controls on genotype-specific
+plates. Selecting WT + DMSO without the role also picks up WT vehicle wells
+placed among the screening wells; keep those for positional validation.
 
-Use `line == 'WT' and Drug_code == 'c_DM'` for the normalization baseline.
-Selecting all `Treatment == 'DMSO'` mixes WT and mutant controls. Selecting
-WT+DMSO without the role also includes three dispersed screening controls on
-the WT plate; the tutorial reserves these for positional validation.
-
-All dedicated references are in column 23. Correction learned there need not
-remove spatial effects throughout the plate. Compare the dedicated and dispersed
-copies of the same treatments on WT_CTRL; do not automatically transfer a spatial
-correction estimated on that single plate to the mutant plates. Replicate wells
-are not independent culture runs.
+When the dedicated references sit together (e.g. in one column), a correction
+learned there need not remove spatial effects elsewhere on the plate. Compare
+dedicated and scattered copies of the same condition on plates that carry
+both, and do not transfer a spatial correction estimated on one plate to
+others without checking it there. Replicate wells on a plate are not
+independent culture runs.
 
 ## Default estimator
 
@@ -34,8 +31,9 @@ normalized[i,f] = (raw[i,f] - m[plate(i),f]) / pooled_sd[f]
 ```
 
 The scale is a pooled sample SD, **not** MAD and not variability pooled before
-removing plate offsets. With three finite references on each of six plates,
-the scale has 12 residual degrees of freedom. `center="median"` changes location
+removing plate offsets. With n finite references on each of P plates, the
+scale has P(n - 1) residual degrees of freedom (e.g. 8 for three wells on
+four plates). `center="median"` changes location
 only; variance is always calculated around within-plate means with n-1 degrees
 of freedom. Exclude documented image/QC failures before fitting.
 
@@ -130,8 +128,8 @@ model = cpt.pp.fit_robust_reference_normalization(
     anchor_queries=POSITIVES,            # optional: same WT condition on every plate
     plate_shrinkage=True,                # James-Stein; needs >= 4 plates
     scale="replicate",                   # or "reference" / "anchors"
-    scale_groupby=["line", "Drug_code"], # replicate groups (Batch is added)
-    scale_query="Drug_code != 'c_DM'",   # e.g. dispersed wells only
+    scale_groupby=["line", "Treatment"], # replicate groups (Batch is added)
+    scale_query="role != 'reference'",   # e.g. dispersed wells only
     scale_estimator="median",            # resists toxic/failed groups
 )
 normalized = cpt.pp.apply_reference_normalization(adata, model, inplace=False)
@@ -147,12 +145,13 @@ normalized = cpt.pp.apply_reference_normalization(adata, model, inplace=False)
    or more anchors, the plate × condition interaction variance estimated from
    additive-fit residuals. When plate shifts are small or do not transfer
    between conditions, B -> 0 and plates are centered on the pooled reference
-   mean. When shared shifts are large, B -> 1. With six plates, B has a median
-   of about 0.3 even under no plate effect; that is the cost of P = 6.
+   mean. When shared shifts are large, B -> 1. With few plates B is noisy:
+   at P = 6 its median is about 0.3 even without any plate effect.
 3. **Scale.** `"replicate"` pools within-group residual variance of replicate
-   groups (e.g. every drug triplicate on every plate: about 1,100 df instead of
-   12). Group means never enter it. Adjacent column-23 reference wells likely
-   understate the well-to-well noise of dispersed wells, which inflates every
+   groups (e.g. every compound triplicate on every plate: hundreds of df
+   instead of a dozen). Group means never enter it. Adjacent reference wells
+   (e.g. one column) likely understate the well-to-well noise of dispersed
+   wells, which inflates every
    z-score and every disease norm. Compare `model["pooled_sd"]` for
    `scale="reference"` and `"replicate"` on your data.
 
@@ -161,26 +160,28 @@ storage. Extra diagnostics: `plate_offsets` (unshrunk delta),
 `shrinkage_factor`, `plate_offset_noise_var`, `plate_condition_interaction_var`,
 `condition_means`, `condition_within_sd`, `scale_dof`.
 
-In a simulation of the six-plate layout (local column-23 effects with SD 1.5
-noise units, small plate-wide shifts), the RMS error of the plate center
-relative to the true plate-wide WT center fell from 1.60 (per-plate WT mean) to
-0.84. Held-out positives improved over WT centering in every scenario tested
-and nearly matched no centering when there was no plate effect. Validate on
+In simulations with three adjacent reference wells per plate, local effects
+at the reference position and small plate-wide shifts, the robust variant
+roughly halved the RMS error of the plate center relative to the true
+plate-wide WT center, compared with the per-plate WT mean. Held-out positives
+improved over WT centering in every scenario tested and nearly matched no
+centering when there was no plate effect. Validate on
 your plates with the CV below (`robust_options`), not with rescue rankings.
 
 ## Feature QC from repeated controls
 
-When the same control condition occupies two well sets, such as the dedicated
-reference wells and scattered screening copies on WT_CTRL, their disagreement
+When the same control condition occupies two well sets, such as dedicated
+reference wells and scattered vehicle wells on a WT plate, their disagreement
 estimates how much a feature responds to well handling rather than to biology.
 `cpt.pp.control_agreement_filter` tests this per feature using control wells
 only, and reports each comparison's median |z| relative to pure noise:
 
 ```python
 copies = {
-    "DMSO": ("line == 'WT' and Drug_code == 'c_DM'", "line == 'WT' and Drug_code == 'c_DM_rand'"),
-    "Ivermectin_B1a": ("Drug_code == 'c_Ivermectin'", "line == 'WT' and Treatment == 'Ivermectin_B1a' and Drug_code != 'c_Ivermectin'"),
-    "cells_only": ("line == 'WT' and Drug_code == 'c'", "line == 'WT' and Drug_code == 'c_rand'"),
+    "DMSO": ("line == 'WT' and role == 'reference' and Treatment == 'DMSO'",
+             "line == 'WT' and role == 'vehicle' and Treatment == 'DMSO'"),
+    "positive_A": ("line == 'WT' and role == 'positive' and Treatment == 'positive_A'",
+                   "line == 'WT' and role == 'screen' and Treatment == 'positive_A'"),
 }
 cpt.pp.control_agreement_filter(adata, copies=copies, batch_key="Batch", source_layer="raw")
 adata.uns["cptools"]["control_agreement_filter"]["median_abs_z_ratio"]
@@ -197,13 +198,14 @@ comparison per plate and much better per-feature power.
 ## Held-out diagnostics
 
 ```python
+POSITIVES = {
+    "positive_A": "line == 'WT' and role == 'positive' and Treatment == 'positive_A'",
+    "positive_B": "line == 'WT' and role == 'positive' and Treatment == 'positive_B'",
+}
 qc = cpt.tl.reference_control_cv(
     adata,
-    reference_query="line == 'WT' and Drug_code == 'c_DM'",
-    positive_control_queries={
-        "Ivermectin_B1a": "line == 'WT' and Drug_code == 'c_Ivermectin'",
-        "Selamectin": "line == 'WT' and Drug_code == 'c_Selamectin'",
-    },
+    reference_query="line == 'WT' and role == 'reference'",
+    positive_control_queries=POSITIVES,
     source_layer="raw", n_splits=3, random_state=7,
     include_positive_gain=False,
     robust_options={"anchor_queries": POSITIVES, "plate_shrinkage": True},  # optional
@@ -236,7 +238,9 @@ variation of held-out plate means around their across-plate mean. Effect magnitu
 is the RMS across-feature mean effect relative to held-out WT references.
 Inspect both: compression can improve dispersion while reducing biological signal.
 Feature counts can differ between folds and are returned explicitly. These are
-descriptive metrics, not statistical significance tests.
+descriptive metrics, not statistical significance tests. Improvement for the
+reference alone does not establish correction of the positive conditions or of
+spatial effects away from the reference wells.
 
 ## Genotype-aware selection and rescue scoring
 
@@ -250,9 +254,9 @@ selection can discard disease biology, so assess sensitivity to the feature set.
 ```python
 scores = cpt.tl.rescue_scores(
     analysis,
-    reference_query="line == 'WT' and Drug_code == 'c_DM'",
-    disease_control_query="Drug_code == 'c_DM_rand'",
-    treatment_query="is_screen_drug == True",
+    reference_query="line == 'WT' and role == 'reference'",
+    disease_control_query="line != 'WT' and role == 'vehicle'",
+    treatment_query="role == 'screen'",
     source_layer="normalized", features=selected_features,
 )
 ```
@@ -285,9 +289,9 @@ noise. Rank on the debiased columns and report `disease_snr`.
 
 **Identical layouts.** When every plate uses the same drug positions, position
 effects repeat on every plate. Agreement of a hit across genotypes is then not
-independent replication. The WT_CTRL plate can supply a positional null: score
-its dispersed WT wells as a pseudo-disease (e.g. relabel `line` on WT_CTRL
-non-reference wells as `"WT_null"`). Drugs that "rescue" this pseudo-disease
+independent replication. A WT plate with the screening layout can supply a
+positional null: score its scattered WT wells as a pseudo-disease (e.g. relabel
+`line` of its non-reference wells as `"WT_null"`). Drugs that "rescue" this pseudo-disease
 vector reflect position or generic effects.
 If the norm is <= `min_disease_norm=1e-8`, scores are NaN and status is
 `disease_vector_too_small`. This is only a numerical guard; it does not establish

@@ -25,12 +25,13 @@ def control_agreement_filter(
     """Flag features on which two copies of the same condition disagree beyond well noise.
 
     ``copies`` maps a name to two ``obs.query`` selections of the *same*
-    biological condition in different well sets, for example dedicated and
-    scattered WT+DMSO wells: ``{"DMSO": ("Drug_code == 'c_DM'",
-    "Drug_code == 'c_DM_rand' and line == 'WT'")}``. Every pair is compared
-    within each batch (``batch_key``) where both copies are present, so plate
-    offsets cancel. With ``batch_key=None`` the queries themselves must
-    restrict the comparison (e.g. ``Batch == 'WT_CTRL' and ...``).
+    biological condition in different well sets, for example dedicated
+    reference wells and scattered vehicle wells:
+    ``{"DMSO": ("role == 'reference' and Treatment == 'DMSO'",
+    "role == 'vehicle' and Treatment == 'DMSO' and line == 'WT'")}``. Every pair
+    is compared within each batch (``batch_key``) where both copies are present,
+    so plate offsets cancel. With ``batch_key=None`` the queries themselves must
+    restrict the comparison (e.g. ``Batch == 'P01' and ...``).
 
     Per feature and comparison k, z_k = (mean_b - mean_a) / (s * sqrt(1/n_a +
     1/n_b)), with s the feature's pooled within-copy SD over all compared

@@ -21,6 +21,7 @@ from ._robust_reference import (
     robust_reference_normalize,
 )
 from ._control_filter import control_agreement_filter
+from ._spatial import spatial_polish
 
 
 DEFAULT_BLOCKLIST_KEY = "default"

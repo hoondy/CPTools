@@ -253,6 +253,43 @@ keep = adata.var["pass_control_agreement"]
 
 ---
 
+### `spatial_polish`
+`cpt.pp.spatial_polish(adata, *, batch_key='Batch', row_key='Row', column_key='Column', source_layer='normalized', output_layer='polished', fit_query=None, origin_query=None, n_iter=3, min_wells=4, inplace=True)`
+
+Removes row and column effects within each plate by two-way median polish
+(Tukey; the location part of the B-score, Brideau et al. 2003, without its MAD
+rescaling). For each plate and feature, alternating sweeps subtract the median
+of every row and then of every column. Each plate ends up centered on its
+typical well; `origin_query` (e.g. `"Treatment == 'DMSO'"`) then subtracts the
+median of those wells pooled over all plates, one vector for every plate, so 0
+means that condition again without per-plate noise.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `fit_query` | `str \| None` | `None` | Wells whose medians estimate the effects (default: all). Effects are subtracted from every well. |
+| `origin_query` | `str \| None` | `None` | Wells whose pooled median becomes 0 after polishing. |
+| `n_iter` | `int` | `3` | Row + column sweeps. |
+| `min_wells` | `int` | `4` | Rows/columns with fewer fit wells are left uncorrected (with a warning). |
+
+**Assumption.** Treatments are placed at random, so a row or column median
+reflects position, not biology. Controls in fixed rows or columns violate this:
+exclude them with `fit_query`. Each median of a few wells adds noise to its
+row or column; compare replicate agreement (`replicate_map`) and
+`batch_similarity` before and after.
+
+**Writes** X and `output_layer`; `uns["cptools"]["spatial_polish"]` holds the
+parameters, per-plate RMS of the removed row and column effects and the
+`origin_shift` vector.
+
+```python
+cpt.pp.robust_reference_normalize(adata, reference_query="Treatment == 'DMSO'",
+                                  anchor_queries={"compounds": "Treatment != 'DMSO'"},
+                                  location="median", scale="replicate", scale_groupby=["Treatment"])
+cpt.pp.spatial_polish(adata, source_layer="normalized", origin_query="Treatment == 'DMSO'")
+```
+
+---
+
 ### `snr_feature_selection`
 `cpt.pp.snr_feature_selection(adata, treatment_key='Treatment', control_value='DMSO', keep_top_fraction=0.2, quantile_threshold=None, min_replicates=2, noise_aggregation='pooled', source_layer=None, subset=False, inplace=True, replicate_groupby=None)`
 
@@ -741,3 +778,69 @@ for line, rows in real.groupby("line"):
 Triplicate pseudo-drugs need at least 5 vehicle wells per genotype and plate.
 With fewer, use a positional null instead, e.g. WT wells placed in screening
 positions and scored as a pseudo-disease.
+
+---
+
+### Batch-effect diagnostics: `batch_similarity`, `group_retrieval`, `scrambled_treatments`
+
+When compounds are assigned to plates without regard to biology, two compounds
+from one plate should be no more alike than two from different plates, and
+matched profiles of one compound on different plates (salt forms, repeated
+library entries) should find each other. These functions score a
+representation on both, and calibrate activity calls with a null that keeps
+the treated-well context. Use them to compare normalizations and batch
+corrections on the same feature set.
+
+`cpt.tl.batch_similarity(adata, *, batch_keys='Batch', layer=None, use_rep=None, features=None, query=None, exclude_key=None, n_neighbors=5)`
+
+One row per batch key (e.g. plate, imaging day, cell batch), usually on one
+consensus profile per compound (e.g. from `sc.get.aggregate`) or an embedding
+(`use_rep`). `cosine_same` / `cosine_cross` are the mean cosine similarities
+of profile pairs from the same / different batches, and `cosine_excess` is
+their difference (0 without a shared batch component). `knn_same` is the
+fraction of each profile's `n_neighbors` most similar profiles from its own
+batch, `knn_expected` the fraction expected if neighbors ignored batch, and
+`knn_enrichment` their ratio (1 without batch clustering). `exclude_key`
+ignores pairs sharing its value, e.g. `"Treatment"` for well-level profiles
+whose replicates share a plate. Profiles are not centered, because the origin
+of a normalization is part of what is evaluated.
+
+`cpt.tl.group_retrieval(adata, *, group_key, relation_keys=None, layer=None, use_rep=None, features=None, query=None)`
+
+Every profile with a `group_key` value queries all other profiles by cosine
+similarity. One row per ordered (query, positive) pair: `rank` (1 + the number
+of non-members more similar than the positive; other members never push a
+positive down), `n_candidates`, `rank_fraction` (`<= 0.01` = top 1%) and
+`cosine`. `relation_keys`, finest first (e.g. `["Batch", "day", "cell_batch"]`),
+label each pair by the first key on which the two agree (`"same Batch"`, ...)
+or `"different <last key>"`. Restrict positives to active compounds by setting
+`group_key` to missing for the others; they stay candidates.
+
+`cpt.tl.scrambled_treatments(adata, *, treatment_key='Treatment', control_value='DMSO', batch_key='Batch', group_size=None, prefix='scrambled_', random_state=0)`
+
+Relabels treated wells into random same-batch groups of `group_size` wells
+from different treatments (default: the most common number of wells per
+treatment in a batch). Returns a Series of labels: `control_value` for
+controls, `"<prefix><batch>_<k>"` for assigned wells, NaN for leftovers.
+Scored like real treatments, the groups estimate how often unrelated treated
+wells look active. Unlike `pseudo_treatment_null`, which draws from control
+wells, they share whatever treated wells share and controls lack (compound
+handling, solvent, the positions a layout reserves for compounds). A method
+whose scrambled groups pass well above the nominal rate inflates activity.
+
+```python
+import scanpy as sc
+
+profiles = sc.get.aggregate(adata[adata.obs["Treatment"] != "DMSO"], by="Treatment",
+                            func="mean", layer="normalized")
+profiles.X = profiles.layers["mean"]
+profiles.obs = profiles.obs.join(compound_table[["Batch", "imaging_day", "parent"]])
+cpt.tl.batch_similarity(profiles, batch_keys=["Batch", "imaging_day"])
+pairs = cpt.tl.group_retrieval(profiles, group_key="parent", relation_keys=["Batch", "imaging_day"])
+top_1pct = (pairs["rank_fraction"] <= 0.01).groupby(pairs["relation"]).mean()
+
+labels = cpt.tl.scrambled_treatments(adata)
+null = adata[labels.notna().to_numpy()].copy()
+null.obs["scrambled"] = labels.dropna()
+false_active = (cpt.tl.replicate_map(null, treatment_key="scrambled")["p_value"] < 0.05).mean()
+```

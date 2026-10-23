@@ -6,4 +6,4 @@ from . import pp
 from . import tl
 
 __all__ = ["read_harmony", "io", "pp", "tl"]
-__version__ = "0.6.0"
+__version__ = "0.7.0"

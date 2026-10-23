@@ -56,12 +56,15 @@ def spatial_polish(
     Medians are taken over ``fit_query`` wells (default: all) and subtracted
     from every well in the row or column. This assumes treatments are placed at
     random, so a row or column median reflects position rather than biology.
-    Controls in fixed rows or columns break that: exclude them with
-    ``fit_query``; their row or column effect then comes from the other wells
-    there. Rows or columns with fewer than ``min_wells`` fit wells get no
-    correction (a warning names them). Each median of a few wells adds noise to
-    every well of its row or column, so compare replicate agreement and
-    ``batch_similarity`` before and after on your data.
+    Controls in fixed rows or columns, or a set of treatments randomized
+    separately into its own rows, break that: exclude them with ``fit_query``;
+    their row or column effect then comes from the other wells there. Rows or
+    columns with fewer than ``min_wells`` fit wells get no correction (a
+    warning names them). Remove locally failed wells (e.g. a damaged block
+    found with ``replicate_outliers``) beforehand: a block that pulls its row's
+    median would shift the healthy wells of that row. Each median of a few
+    wells adds noise to every well of its row or column, so compare replicate
+    agreement and ``batch_similarity`` before and after on your data.
 
     Writes X and ``output_layer``. ``uns['cptools']['spatial_polish']`` holds the
     parameters, per-batch RMS (over wells and features) of the removed row and

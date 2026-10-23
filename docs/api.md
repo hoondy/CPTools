@@ -272,10 +272,13 @@ means that condition again without per-plate noise.
 | `min_wells` | `int` | `4` | Rows/columns with fewer fit wells are left uncorrected (with a warning). |
 
 **Assumption.** Treatments are placed at random, so a row or column median
-reflects position, not biology. Controls in fixed rows or columns violate this:
-exclude them with `fit_query`. Each median of a few wells adds noise to its
-row or column; compare replicate agreement (`replicate_map`) and
-`batch_similarity` before and after.
+reflects position, not biology. Controls in fixed rows or columns, or a set of
+treatments randomized separately into its own rows, violate this: exclude them
+with `fit_query`. Remove locally failed wells first (e.g. a damaged block found
+with `replicate_outliers`): a block that pulls its row's median would shift the
+healthy wells of that row. Each median of a few wells adds noise to its row or
+column; compare replicate agreement (`replicate_map`) and `batch_similarity`
+before and after.
 
 **Writes** X and `output_layer`; `uns["cptools"]["spatial_polish"]` holds the
 parameters, per-plate RMS of the removed row and column effects and the

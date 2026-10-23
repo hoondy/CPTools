@@ -557,10 +557,31 @@ emb = cpt.tl.axis_pca(adata, groups=groups, axis=("MUT_DMSO", "WT_DMSO"),
 # plot emb["axis"] against emb["orthogonal_1"]: MUT_DMSO at (0, 0), WT_DMSO at (1, 0)
 ```
 
-`cpt.tl.feature_contrasts(adata, *, groups, contrasts, layer='normalized', features=None)`
+`cpt.tl.feature_contrasts(adata, *, groups, contrasts, layer='normalized', features=None, variance='welch')`
 
-Per-feature Welch tests for `{name: (a, b)}` contrasts (b − a): difference,
-Cohen's d, t, p and BH q within each contrast, as a long table.
+Per-feature tests for `{name: (a, b)}` contrasts (b − a): difference, its
+standard error, Cohen's d, t, p and BH q within each contrast, as a long
+table. `variance="welch"` uses each pair's own variances (Welch test);
+`variance="pooled"` pools one variance per feature over every group in
+`contrasts` (t test on the pooled df), which is far more stable with three
+wells per group in a noise-scaled layer.
+
+`cpt.tl.feature_meta_analysis(table, *, effect='difference', standard_error='standard_error', by='feature', study='contrast', method='fixed')`
+
+Combines the contrasts of a `feature_contrasts` table per feature by
+inverse-variance meta-analysis, like metafor's `rma(yi, sei, method="FE")`.
+`method="fixed"` estimates one effect shared by all contrasts;
+`method="random"` adds a DerSimonian–Laird between-contrast variance (`tau2`).
+Returns one row per feature: `estimate`, `standard_error`, 95% CI, `z`,
+`p_value`, BH `q_value` across features, Cochran's `Q` and its p-value, `I2`,
+`tau2`, `k` and `n_positive` (contrasts with a positive effect). Standard
+errors from a few wells are noisy, so p-values are approximate.
+
+```python
+per_line = cpt.tl.feature_contrasts(adata, groups=groups, contrasts={
+    "APP": ("APP_WT_DMSO", "APP_DMSO"), "PSEN1": ("PSEN1_WT_DMSO", "PSEN1_DMSO")})
+meta = cpt.tl.feature_meta_analysis(per_line)   # one row per feature
+```
 
 `cpt.tl.replicate_outliers(adata, *, groupby, layer='normalized', features=None, threshold=3.5)`
 

@@ -535,31 +535,131 @@ def feature_contrasts(
     contrasts: Mapping[str, tuple[str, str]],
     layer: str | None = "normalized",
     features: Sequence[str] | None = None,
+    variance: str = "welch",
 ) -> pd.DataFrame:
-    """Per-feature Welch t-tests for named contrasts ``name: (a, b)`` (b - a).
+    """Per-feature t-tests for named contrasts ``name: (a, b)`` (b - a).
 
-    Returns a long table with ``difference`` (layer units), ``cohen_d`` (pooled
-    within-pair SD), ``t``, ``p_value`` and Benjamini-Hochberg ``q_value``
-    computed within each contrast. Wells are technical replicates; correlated
-    features make the number of significant features a descriptive count.
+    Returns a long table with ``difference`` (layer units), its
+    ``standard_error``, ``cohen_d`` (pooled within-pair SD), ``t``,
+    ``p_value`` and Benjamini-Hochberg ``q_value`` computed within each
+    contrast. ``variance`` sets the standard error:
+
+    - ``"welch"``: sqrt(var_a/n_a + var_b/n_b) from the two groups (Welch test);
+    - ``"pooled"``: one variance per feature pooled over every group named in
+      ``contrasts`` (df = sum of n_g - 1), sqrt(s^2 (1/n_a + 1/n_b)), with a
+      t test on that df. It assumes equal well noise across groups, as in a
+      noise-scaled layer, and is far more stable when groups have few wells.
+
+    Wells are technical replicates; correlated features make the number of
+    significant features a descriptive count. ``feature_meta_analysis``
+    combines the contrasts per feature.
     """
     if not contrasts:
         raise ValueError("Provide at least one contrast.")
+    if variance not in {"welch", "pooled"}:
+        raise ValueError("variance must be 'welch' or 'pooled'.")
     names = [g for pair in contrasts.values() for g in pair]
     X, index = _prepare(adata, groups, names, layer, features)
     feature_names = (adata.var_names if features is None else pd.Index(list(features))).astype(str)
+    if variance == "pooled":
+        unique = list(dict.fromkeys(names))
+        df_pooled = sum(len(index[g]) - 1 for g in unique)
+        if df_pooled < 1:
+            raise ValueError("variance='pooled' needs groups with at least two wells.")
+        s2 = sum(((X[index[g]] - X[index[g]].mean(axis=0)) ** 2).sum(axis=0) for g in unique) / df_pooled
     tables = []
     for name, (a, b) in contrasts.items():
         xa, xb = X[index[a]], X[index[b]]
         diff = xb.mean(axis=0) - xa.mean(axis=0)
         na, nb = len(xa), len(xb)
-        pooled = np.sqrt(((na - 1) * xa.var(axis=0, ddof=1) + (nb - 1) * xb.var(axis=0, ddof=1)) / (na + nb - 2))
-        t, p = stats.ttest_ind(xb, xa, axis=0, equal_var=False)
+        va, vb = xa.var(axis=0, ddof=1), xb.var(axis=0, ddof=1)
+        pooled = np.sqrt(((na - 1) * va + (nb - 1) * vb) / (na + nb - 2))
+        if variance == "pooled":
+            se = np.sqrt(s2 * (1.0 / na + 1.0 / nb))
+            t = np.divide(diff, se, out=np.full_like(diff, np.nan), where=se > 0)
+            p = 2.0 * stats.t.sf(np.abs(t), df_pooled)
+        else:
+            se = np.sqrt(va / na + vb / nb)
+            t, p = stats.ttest_ind(xb, xa, axis=0, equal_var=False)
         p = np.where(np.isfinite(p), p, 1.0)
         tables.append(pd.DataFrame({
             "contrast": name, "feature": feature_names, "group_a": a, "group_b": b,
-            "difference": diff,
+            "difference": diff, "standard_error": se,
             "cohen_d": np.divide(diff, pooled, out=np.full_like(diff, np.nan), where=pooled > 0),
             "t": t, "p_value": p, "q_value": bh_fdr(p),
         }))
     return pd.concat(tables, ignore_index=True)
+
+
+def feature_meta_analysis(
+    table: pd.DataFrame,
+    *,
+    effect: str = "difference",
+    standard_error: str = "standard_error",
+    by: str = "feature",
+    study: str = "contrast",
+    method: str = "fixed",
+) -> pd.DataFrame:
+    """Inverse-variance meta-analysis of per-feature effects across contrasts.
+
+    Combines a long table with one row per ``by`` (feature) and ``study``
+    (contrast), such as the output of ``feature_contrasts``, into one row per
+    feature, like metafor's ``rma(yi, sei, method="FE")``. With effects y_i,
+    standard errors s_i and weights w_i = 1 / s_i^2 over the k contrasts:
+
+    - ``method="fixed"``: estimate = sum(w_i y_i) / sum(w_i), standard error
+      1 / sqrt(sum(w_i)); it tests a common effect shared by all contrasts.
+    - ``method="random"``: DerSimonian-Laird; between-contrast variance
+      tau2 = max(0, (Q - (k - 1)) / (sum(w_i) - sum(w_i^2) / sum(w_i))) and
+      weights 1 / (s_i^2 + tau2).
+
+    Columns: ``estimate``, ``standard_error``, 95% ``ci_low``/``ci_high``,
+    ``z``, two-sided ``p_value``, Benjamini-Hochberg ``q_value`` across
+    features, Cochran's ``Q`` (sum(w_i (y_i - fixed estimate)^2)) with its
+    chi-square ``Q_p_value`` on k - 1 df, ``I2`` = max(0, (Q - (k - 1)) / Q),
+    ``tau2`` (0 for the fixed model), ``k`` and ``n_positive`` (contrasts with
+    y_i > 0). Rows with a missing effect or a nonpositive or missing standard
+    error are skipped. Standard errors from a few wells are themselves noisy,
+    so p-values are approximate. Returns a table indexed by ``by``.
+    """
+    if method not in {"fixed", "random"}:
+        raise ValueError("method must be 'fixed' or 'random'.")
+    missing = [c for c in (effect, standard_error, by, study) if c not in table.columns]
+    if missing:
+        raise KeyError(f"Missing columns: {missing}")
+    if table.duplicated([by, study]).any():
+        raise ValueError(f"Each ({by}, {study}) pair must appear once.")
+    y = table[effect].to_numpy(dtype=float)
+    s = table[standard_error].to_numpy(dtype=float)
+    keep = np.isfinite(y) & np.isfinite(s) & (s > 0)
+    if not keep.any():
+        raise ValueError("No rows with a finite effect and a positive standard error.")
+    data = pd.DataFrame({"key": table[by].to_numpy()[keep], "y": y[keep], "w": 1.0 / s[keep] ** 2})
+    data["wy"], data["wyy"], data["ww"] = data.w * data.y, data.w * data.y ** 2, data.w ** 2
+    sums = data.groupby("key", sort=False).agg(k=("y", "size"), n_positive=("y", lambda v: int((v > 0).sum())),
+                                              w=("w", "sum"), wy=("wy", "sum"), wyy=("wyy", "sum"), ww=("ww", "sum"))
+    fixed = sums.wy / sums.w
+    Q = (sums.wyy - sums.wy ** 2 / sums.w).clip(lower=0.0)
+    df = sums.k - 1
+    if method == "fixed":
+        tau2 = pd.Series(0.0, index=sums.index)
+        estimate, se = fixed, 1.0 / np.sqrt(sums.w)
+    else:
+        c = sums.w - sums.ww / sums.w
+        tau2 = ((Q - df) / c.where(c > 0)).clip(lower=0.0).fillna(0.0)
+        data["w_re"] = 1.0 / (1.0 / data.w + data.key.map(tau2))
+        data["wy_re"] = data.w_re * data.y
+        re = data.groupby("key", sort=False)[["w_re", "wy_re"]].sum()
+        estimate, se = re.wy_re / re.w_re, 1.0 / np.sqrt(re.w_re)
+    z = estimate / se
+    p = 2.0 * stats.norm.sf(np.abs(z))
+    out = pd.DataFrame({
+        "estimate": estimate, "standard_error": se,
+        "ci_low": estimate - 1.959964 * se, "ci_high": estimate + 1.959964 * se,
+        "z": z, "p_value": p, "q_value": bh_fdr(p),
+        "Q": Q, "Q_p_value": np.where(df > 0, stats.chi2.sf(Q, df.clip(lower=1)), np.nan),
+        "I2": np.where(Q > 0, ((Q - df) / Q.where(Q > 0)).clip(lower=0.0), 0.0),
+        "tau2": tau2, "k": sums.k, "n_positive": sums.n_positive,
+    })
+    out.index.name = by
+    return out

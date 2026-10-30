@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from ._reference_normalization import _query_mask, _source
+from ._reference_normalization import _batches, _query_mask, _source
 from ._utils import bh_fdr
 
 
@@ -663,3 +663,63 @@ def feature_meta_analysis(
     })
     out.index.name = by
     return out
+
+
+def effect_size(
+    adata: ad.AnnData,
+    *,
+    treatment_key: str = "Treatment",
+    batch_key: str = "Batch",
+    noise_key: str | None = None,
+    layer: str | None = None,
+    features: Sequence[str] | None = None,
+) -> pd.Series:
+    """Distance of each treatment's mean profile from the origin, corrected for replicate noise.
+
+    For profiles centered on a reference (0 = vehicle, e.g. after
+    ``robust_reference_normalize``), the root mean square over features of a
+    treatment's mean overstates its effect: averaging n noisy wells leaves
+    noise variance s^2 / n in every feature. s^2 is estimated per batch and
+    feature as the pooled variance of the replicate residuals of the
+    ``noise_key`` groups on that batch (default ``treatment_key``), so
+    treatments on noisier plates are corrected more. Returns, per treatment,
+    sqrt(max(0, mean over features of (mean^2 - sum over wells of s^2 / n^2))),
+    in the units of the data.
+
+    Pass ``noise_key`` when the scored groups are not replicates, e.g.
+    ``scrambled_treatments`` labels: their spread reflects different
+    treatments, so take s^2 from the real ones. Wells with a missing
+    ``treatment_key`` then still inform the noise but are not scored.
+    """
+    for key in (treatment_key, noise_key or treatment_key):
+        if key not in adata.obs:
+            raise KeyError(f"Missing {key!r} in obs.")
+    noise_labels = adata.obs[noise_key or treatment_key]
+    if noise_labels.isna().any():
+        raise ValueError(f"{noise_key or treatment_key!r} must not be missing.")
+    data = adata if features is None else adata[:, list(features)]
+    if data.n_vars == 0:
+        raise ValueError("Select at least one feature.")
+    X = np.asarray(_source(data, layer), dtype=np.float64)
+    batch = _batches(adata, batch_key)
+    noise_group = noise_labels.astype(str).to_numpy()
+
+    variance = np.empty_like(X)
+    for b in pd.unique(batch):
+        wells = batch == b
+        residual = X[wells] - pd.DataFrame(X[wells]).groupby(noise_group[wells]).transform("mean").to_numpy()
+        dof = int(wells.sum()) - len(np.unique(noise_group[wells]))
+        if dof < 1:
+            raise ValueError(f"Batch {b!r} has no replicate wells to estimate noise from.")
+        variance[wells] = (residual ** 2).sum(axis=0) / dof
+
+    label = adata.obs[treatment_key]
+    scored = label.notna().to_numpy()
+    if not scored.any():
+        raise ValueError(f"No wells with a {treatment_key!r} value.")
+    label = label[scored].astype(str).to_numpy()
+    grouped = pd.DataFrame(X[scored]).groupby(label)
+    means, counts = grouped.mean(), grouped.size()
+    noise = pd.DataFrame(variance[scored]).groupby(label).sum().loc[means.index].to_numpy() / (counts.to_numpy()[:, None] ** 2)
+    debiased = ((means.to_numpy() ** 2) - noise).mean(axis=1)
+    return pd.Series(np.sqrt(np.clip(debiased, 0, None)), index=means.index.rename(treatment_key), name="effect_size")

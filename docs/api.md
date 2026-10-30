@@ -852,3 +852,70 @@ null = adata[labels.notna().to_numpy()].copy()
 null.obs["scrambled"] = labels.dropna()
 false_active = (cpt.tl.replicate_map(null, treatment_key="scrambled")["p_value"] < 0.05).mean()
 ```
+
+---
+
+### Position diagnostics: `position_similarity`, `position_map`
+
+Robotic layouts randomize treatments over the plate, but the plate itself can
+still leave a pattern: edge wells evaporate, a dispensing channel or tip
+under- or over-delivers, wells are imaged in a fixed order. Both functions
+look for that pattern in replicate residuals: each well minus the mean of its
+group's wells on the same plate (`group_key`, e.g. compound). A residual
+contains no treatment effect, so two residuals from different groups resemble
+each other only through what their wells share technically.
+
+`cpt.tl.position_similarity(adata, *, group_key='Treatment', batch_key='Batch', row_key='Row', column_key='Column', layer=None, features=None, query=None, bins=(0, 1.01, 1.5, 2.5, 4, 6, 10, inf))`
+
+One row per plate and relation: the mean cosine similarity of residual pairs
+from different groups (`cosine`), the number of pairs (`pairs`) and their mean
+distance (`distance`, in well spacings center to center: 1 = adjacent, 1.41 =
+diagonal). Relations are the distance `bins` (labelled like `"(0, 1.01]"`)
+plus `"same row"` and `"same column"` at any distance. Without position
+effects every relation is near 0. Similarity that falls with distance, or a
+column that shares more than a row, is a position effect; check that it holds
+on every plate, and that a correction such as `spatial_polish` brings it back
+to 0.
+
+`cpt.tl.position_map(adata, *, group_key='Treatment', batch_key='Batch', row_key='Row', column_key='Column', layer=None, features=None, query=None)`
+
+The residuals of each position are averaged over plates and summarized as the
+root mean square over features: a rows x columns table. Independent noise
+averages down (to about its SD / sqrt(number of plates)), so positions that
+deviate the same way on many plates stand out, such as an edge or one failing
+channel. Count recurrent replicate outliers per position
+(`replicate_outliers`) to name positions that fail outright.
+
+```python
+table = cpt.tl.position_similarity(adata, group_key="Treatment", layer="normalized")
+by_distance = table.pivot(index="batch", columns="relation", values="cosine")
+cpt.pp.spatial_polish(adata, source_layer="normalized", origin_query="Treatment == 'DMSO'")
+after = cpt.tl.position_similarity(adata, group_key="Treatment", layer="polished")
+edges = cpt.tl.position_map(adata, group_key="Treatment", layer="normalized")
+```
+
+---
+
+### `effect_size`
+`cpt.tl.effect_size(adata, *, treatment_key='Treatment', batch_key='Batch', noise_key=None, layer=None, features=None)`
+
+How far each treatment's mean profile is from the origin, for data centered
+on a reference (0 = vehicle, e.g. after `robust_reference_normalize`). The
+root mean square of a mean of n wells overstates the effect, because every
+feature keeps noise variance s^2 / n. The noise s^2 is estimated per plate and
+feature from the replicate residuals of the `noise_key` groups (default
+`treatment_key`), so treatments on noisier plates are corrected more. Returns
+a Series: sqrt(max(0, mean over features of (mean^2 - sum over wells of
+s^2 / n^2))), in the units of the data.
+
+When the scored groups are not replicates (e.g. `scrambled_treatments`
+labels), pass `noise_key` so that s^2 comes from the real treatments; wells
+with a missing `treatment_key` then inform the noise but are not scored, and
+the effect sizes of scrambled groups give the null distribution for a cut-off.
+
+```python
+sizes = cpt.tl.effect_size(adata, treatment_key="Treatment", layer="polished").drop("DMSO")
+adata.obs["scrambled"] = cpt.tl.scrambled_treatments(adata)
+null = cpt.tl.effect_size(adata, treatment_key="scrambled", noise_key="Treatment", layer="polished").drop("DMSO")
+strong = sizes[sizes > null.quantile(0.99)]
+```

@@ -16,11 +16,12 @@ from ._utils import bh_fdr as _bh_fdr, to_dense_matrix
 from ._batch_diagnostics import batch_similarity, group_retrieval, scrambled_treatments
 from ._reference_analysis import reference_control_cv, rescue_scores
 from ._profile_geometry import (
-    axis_pca, feature_contrasts, feature_meta_analysis, group_separation, profile_shift, profile_shift_screen,
-    replicate_outliers,
+    axis_pca, effect_size, feature_contrasts, feature_meta_analysis, group_separation, profile_shift,
+    profile_shift_screen, replicate_outliers,
 )
 from ._pseudo_treatments import empirical_pvalues, pseudo_treatment_null
 from ._replicate_retrieval import replicate_map
+from ._spatial import position_map, position_similarity
 
 
 def _save_plotly_figure(

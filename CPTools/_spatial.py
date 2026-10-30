@@ -1,6 +1,7 @@
-"""Within-plate row and column effects removed by two-way median polish."""
+"""Within-plate position effects: diagnostics, and removal by two-way median polish."""
 from __future__ import annotations
 
+from typing import Sequence
 import warnings
 
 import anndata as ad
@@ -8,6 +9,8 @@ import numpy as np
 import pandas as pd
 
 from ._reference_normalization import _batches, _query_mask, _source
+
+DISTANCE_BINS = (0.0, 1.01, 1.5, 2.5, 4.0, 6.0, 10.0, np.inf)
 
 
 def _sweep(W, fit, labels, min_wells):
@@ -133,3 +136,134 @@ def spatial_polish(
         "origin_shift": shift,
     }
     return target
+
+
+def _position_data(adata, group_key, batch_key, row_key, column_key, layer, features, query):
+    data = adata if query is None else adata[_query_mask(adata.obs, query)]
+    for key in (group_key, row_key, column_key):
+        if key not in data.obs:
+            raise KeyError(f"Missing {key!r} in obs.")
+        if data.obs[key].isna().any():
+            raise ValueError(f"{key!r} must not be missing.")
+    X = _source(data if features is None else data[:, list(features)], layer)
+    if X.shape[1] == 0:
+        raise ValueError("Select at least one feature.")
+    batch = _batches(data, batch_key)
+    group = data.obs[group_key].astype(str).to_numpy()
+    row = data.obs[row_key].astype(float).to_numpy()
+    column = data.obs[column_key].astype(float).to_numpy()
+    return np.asarray(X, dtype=np.float64), batch, group, row, column
+
+
+def _replicate_residuals(X, group):
+    """Each well minus the mean of its group; False in ``usable`` for single wells and zero residuals."""
+    residual = X - pd.DataFrame(X).groupby(group).transform("mean").to_numpy()
+    size = pd.Series(group).map(pd.Series(group).value_counts()).to_numpy()
+    norm = np.linalg.norm(residual, axis=1)
+    return residual, (size > 1) & np.isfinite(norm) & (norm > 0)
+
+
+def position_similarity(
+    adata: ad.AnnData,
+    *,
+    group_key: str = "Treatment",
+    batch_key: str = "Batch",
+    row_key: str = "Row",
+    column_key: str = "Column",
+    layer: str | None = None,
+    features: Sequence[str] | None = None,
+    query: str | None = None,
+    bins: Sequence[float] = DISTANCE_BINS,
+) -> pd.DataFrame:
+    """How alike the noise of two wells is, by their distance on the plate.
+
+    A replicate residual is a well minus the mean of its group's wells on the
+    same batch (``group_key``, e.g. compound). It contains no group effect, so
+    residuals of wells from different groups resemble each other only through
+    technical factors they share. With groups placed at random, similarity that
+    falls with distance, or is higher along a row or a column, is a position
+    effect (dispensing channel, edge evaporation, imaging order).
+
+    Returns one row per batch and relation: the mean cosine similarity of
+    residual pairs from different groups (``cosine``), the number of pairs
+    (``pairs``) and their mean distance (``distance``). Relations are the
+    distance ``bins`` in well spacings, center to center (1 = adjacent, 1.41 =
+    diagonal), labelled like ``"(0, 1.01]"``, plus ``"same row"`` and
+    ``"same column"`` at any distance. Groups with a single well on a batch
+    have no residual and are skipped. Compare the nearest bin with the
+    farthest one on every batch; a correction such as ``spatial_polish``
+    should bring both toward 0.
+    """
+    edges = np.asarray(bins, dtype=float)
+    if edges.ndim != 1 or len(edges) < 2 or np.any(np.diff(edges) <= 0):
+        raise ValueError("bins must be at least two increasing edges.")
+    labels = [f"({lo:g}, {hi:g}]" for lo, hi in zip(edges[:-1], edges[1:])]
+    X, batch, group, row, column = _position_data(adata, group_key, batch_key, row_key, column_key, layer,
+                                                  features, query)
+    records = []
+    for b in pd.unique(batch):
+        wells = np.flatnonzero(batch == b)
+        residual, usable = _replicate_residuals(X[wells], group[wells])
+        wells, residual = wells[usable], residual[usable]
+        if len(wells) < 2:
+            continue
+        unit = residual / np.linalg.norm(residual, axis=1, keepdims=True)
+        upper = np.triu_indices(len(wells), 1)
+        different = (group[wells][:, None] != group[wells][None, :])[upper]
+        cosine = (unit @ unit.T)[upper][different]
+        r, c = row[wells], column[wells]
+        distance = np.hypot(r[:, None] - r[None, :], c[:, None] - c[None, :])[upper][different]
+        which = np.searchsorted(edges, distance, side="left") - 1
+        for i, label in enumerate(labels):
+            hit = which == i
+            if hit.any():
+                records.append((b, label, distance[hit].mean(), cosine[hit].mean(), int(hit.sum())))
+        for label, same in (("same row", r[:, None] == r[None, :]), ("same column", c[:, None] == c[None, :])):
+            hit = same[upper][different]
+            if hit.any():
+                records.append((b, label, distance[hit].mean(), cosine[hit].mean(), int(hit.sum())))
+    if not records:
+        raise ValueError("No batch has two wells with replicate residuals.")
+    return pd.DataFrame(records, columns=["batch", "relation", "distance", "cosine", "pairs"])
+
+
+def position_map(
+    adata: ad.AnnData,
+    *,
+    group_key: str = "Treatment",
+    batch_key: str = "Batch",
+    row_key: str = "Row",
+    column_key: str = "Column",
+    layer: str | None = None,
+    features: Sequence[str] | None = None,
+    query: str | None = None,
+) -> pd.DataFrame:
+    """Typical deviation of each plate position from its replicates, across batches.
+
+    Replicate residuals (each well minus the mean of its group's wells on its
+    batch, as in ``position_similarity``) are averaged over batches for every
+    position, and the average is summarized as the root mean square over
+    features. Group effects cancel within each residual and independent noise
+    shrinks with the number of batches (to about its SD / sqrt(n_batches)), so
+    positions that deviate the same way on many plates stand out: edges, a
+    dispensing channel, a failing tip. Returns a table indexed by row with one
+    column per plate column; NaN where no batch has a residual.
+    """
+    X, batch, group, row, column = _position_data(adata, group_key, batch_key, row_key, column_key, layer,
+                                                  features, query)
+    residuals, rows, columns = [], [], []
+    for b in pd.unique(batch):
+        wells = np.flatnonzero(batch == b)
+        residual, usable = _replicate_residuals(X[wells], group[wells])
+        residuals.append(residual[usable])
+        rows.append(row[wells][usable])
+        columns.append(column[wells][usable])
+    mean = pd.DataFrame(np.vstack(residuals)).groupby([np.concatenate(rows), np.concatenate(columns)]).mean()
+    rms = np.sqrt((mean ** 2).mean(axis=1))
+    table = rms.unstack()
+    for axis in ("index", "columns"):
+        labels = getattr(table, axis)
+        if np.all(np.mod(labels, 1) == 0):
+            setattr(table, axis, labels.astype(int))
+    table.index.name, table.columns.name = row_key, column_key
+    return table
